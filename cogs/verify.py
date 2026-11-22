@@ -206,6 +206,101 @@ class VerifyView(discord.ui.View):
         self.done = True
 
 
+class VerifyPanelView(discord.ui.View):
+    """Persistent панель верификации для стаффа: дропдаун + кнопка Пинг."""
+
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(
+        label="Пинг",
+        style=discord.ButtonStyle.secondary,
+        emoji="🔔",
+        custom_id="verify_panel_ping",
+    )
+    async def ping(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not _is_staff(interaction.user):
+            await interaction.response.send_message("Нет прав.", ephemeral=True)
+            return
+        # Найти всех неверифицированных в проходках
+        male_id, female_id, _ = _get_ids(interaction.guild.id)
+        waiting = []
+        for vc in interaction.guild.voice_channels:
+            if "Проходка" in vc.name or "проходка" in vc.name.lower():
+                for m in vc.members:
+                    if not _already_verified(m, male_id, female_id):
+                        waiting.append(f"{m.mention} — {vc.name}")
+        if not waiting:
+            await interaction.response.send_message("Нет гостей в проходках.", ephemeral=True)
+            return
+        await interaction.response.send_message(
+            "🔔 Гости в проходках:\n" + "\n".join(waiting), ephemeral=True
+        )
+
+    @discord.ui.select(
+        placeholder="Выбери гостя из проходки...",
+        custom_id="verify_panel_select",
+        min_values=1,
+        max_values=1,
+        options=[discord.SelectOption(label="Загрузка...", value="none")],
+    )
+    async def select_member(self, interaction: discord.Interaction, select: discord.ui.Select):
+        if not _is_staff(interaction.user):
+            await interaction.response.send_message("Нет прав.", ephemeral=True)
+            return
+
+        value = select.values[0]
+        if value == "none":
+            await interaction.response.send_message("Обнови список — нажми Пинг.", ephemeral=True)
+            return
+
+        member_id = int(value)
+        member = interaction.guild.get_member(member_id)
+        if not member:
+            await interaction.response.send_message("Участник не найден.", ephemeral=True)
+            return
+
+        male_id, female_id, _ = _get_ids(interaction.guild.id)
+        if _already_verified(member, male_id, female_id):
+            await interaction.response.send_message(f"{member.mention} уже верифицирован.", ephemeral=True)
+            return
+
+        voice_name = "🔇 · не в войсе"
+        if member.voice and member.voice.channel:
+            voice_name = f"🔊 · {member.voice.channel.name}"
+
+        embed = _make_embed(member, voice_name)
+        view = VerifyView(member=member, verifier=interaction.user)
+        await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
+
+
+class VerifyPanelRefreshView(discord.ui.View):
+    """Временная view для обновления списка дропдауна."""
+
+    def __init__(self, guild: discord.Guild):
+        super().__init__(timeout=None)
+        self.guild = guild
+
+    async def refresh_options(self, guild: discord.Guild) -> list[discord.SelectOption]:
+        male_id = DEFAULT_MALE_ID
+        female_id = DEFAULT_FEMALE_ID
+        options = []
+        for vc in guild.voice_channels:
+            if "роходка" in vc.name or "проходка" in vc.name.lower():
+                for m in vc.members:
+                    if not _already_verified(m, male_id, female_id):
+                        options.append(
+                            discord.SelectOption(
+                                label=m.display_name[:25],
+                                description=vc.name[:50],
+                                value=str(m.id),
+                            )
+                        )
+        if not options:
+            options = [discord.SelectOption(label="Нет гостей в проходках", value="none")]
+        return options[:25]
+
+
 class Verify(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
@@ -267,7 +362,17 @@ class Verify(commands.Cog):
         embed.add_field(name="♀",     value=str(female), inline=True)
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
-    @app_commands.command(name="setup_verify", description="Настроить роли и канал логов верификации")
+    @app_commands.command(name="setup_verify_panel", description="Поставить панель верификации в канал стаффа")
+    @app_commands.describe(channel="Канал где будет панель")
+    @app_commands.checks.has_permissions(administrator=True)
+    async def setup_verify_panel(self, interaction: discord.Interaction, channel: discord.TextChannel):
+        embed = discord.Embed(
+            title="🔑 Доступ",
+            description="Участники ожидающие верификации. Выбери из списка.",
+            color=discord.Color.from_str("#a9c9ff"),
+        )
+        await channel.send(embed=embed, view=VerifyPanelView())
+        await interaction.response.send_message(f"✅ Панель поставлена в {channel.mention}", ephemeral=True)
     @app_commands.describe(
         log_channel="Канал для логов верификаций",
         role_male="Роль ♂",
@@ -357,4 +462,5 @@ class CallHelperView(discord.ui.View):
 
 async def setup(bot: commands.Bot):
     bot.add_view(CallHelperView())
+    bot.add_view(VerifyPanelView())
     await bot.add_cog(Verify(bot))
