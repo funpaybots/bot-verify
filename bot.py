@@ -43,6 +43,10 @@ async def main():
 
     token, guild_id = _load_config()
 
+    # Если GUILD_ID не задан через env/config — используем дефолтный
+    if not guild_id:
+        guild_id = 1573386089467748482
+
     intents = discord.Intents.default()
 
     bot = commands.Bot(command_prefix="!", intents=intents)
