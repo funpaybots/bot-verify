@@ -69,6 +69,7 @@ class RejectModal(discord.ui.Modal, title="Причина недопуска"):
         self.parent_view = view
 
     async def on_submit(self, interaction: discord.Interaction):
+        await interaction.response.defer()
         await self.parent_view._apply(interaction, None, reason=self.reason.value)
 
 
@@ -86,13 +87,22 @@ class VerifyView(discord.ui.View):
         reason: str = "",
     ):
         if self.done:
-            await interaction.response.defer()
             return
         self.done = True
         self.stop()
 
         guild = interaction.guild
         male_id, female_id, log_ch_id = _get_ids(guild.id)
+
+        # Определяем метод ответа: из модалки уже сделан defer → followup
+        # Из кнопки — ещё не отвечали → edit_message
+        responded = interaction.response.is_done()
+
+        async def edit(embed):
+            if responded:
+                await interaction.followup.send(embed=embed, ephemeral=True)
+            else:
+                await interaction.response.edit_message(embed=embed, view=None)
 
         if gender is None:
             # Недопуск
@@ -106,12 +116,11 @@ class VerifyView(discord.ui.View):
             if reason:
                 result_embed.add_field(name="Причина", value=reason, inline=False)
             result_embed.add_field(name="ID", value=str(self.member.id), inline=True)
-            await interaction.response.edit_message(embed=result_embed, view=None)
+            await edit(result_embed)
 
             # Лог в канал
-            _, _, log_ch_id = _get_ids(interaction.guild.id)
             if log_ch_id:
-                log_ch = interaction.guild.get_channel(int(log_ch_id))
+                log_ch = guild.get_channel(int(log_ch_id))
                 if log_ch:
                     await log_ch.send(embed=result_embed)
         else:
@@ -120,17 +129,23 @@ class VerifyView(discord.ui.View):
             symbol = "♂ Парень" if gender == "male" else "♀ Девушка"
 
             if not role:
-                await interaction.response.edit_message(
-                    content=f"Роль не найдена (id={role_id}).", embed=None, view=None
-                )
+                if responded:
+                    await interaction.followup.send(f"Роль не найдена (id={role_id}).", ephemeral=True)
+                else:
+                    await interaction.response.edit_message(
+                        content=f"Роль не найдена (id={role_id}).", embed=None, view=None
+                    )
                 return
 
             try:
                 await self.member.add_roles(role, reason=f"Верификация от {interaction.user}")
             except discord.Forbidden:
-                await interaction.response.edit_message(
-                    content="Нет прав выдавать роль — проверь позицию роли бота.", embed=None, view=None
-                )
+                if responded:
+                    await interaction.followup.send("Нет прав выдавать роль.", ephemeral=True)
+                else:
+                    await interaction.response.edit_message(
+                        content="Нет прав выдавать роль — проверь позицию роли бота.", embed=None, view=None
+                    )
                 return
 
             # Лог в файл
@@ -152,7 +167,7 @@ class VerifyView(discord.ui.View):
             result_embed.set_thumbnail(url=self.member.display_avatar.url)
             result_embed.add_field(name="ID", value=str(self.member.id), inline=True)
             result_embed.add_field(name="Роль", value=role.mention, inline=True)
-            await interaction.response.edit_message(embed=result_embed, view=None)
+            await edit(result_embed)
 
             # Лог в канал
             if log_ch_id:
