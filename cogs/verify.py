@@ -466,6 +466,42 @@ class Verify(commands.Cog):
         embed.add_field(name="♀",     value=str(female), inline=True)
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
+    @app_commands.command(name="post_team", description="Запостить состав команды в канал")
+    @app_commands.describe(channel="Канал куда постить (обычно 🧸--наша-команда)")
+    @app_commands.checks.has_permissions(administrator=True)
+    async def post_team(self, interaction: discord.Interaction, channel: discord.TextChannel):
+        embed = discord.Embed(
+            color=discord.Color.from_str("#a9c9ff"),
+        )
+        embed.add_field(
+            name="Лапки, которые заботятся о доме",
+            value=(
+                "<@&1573422762205257763> — хозяин дома.\n"
+                "<@&1573680800233426984> — хозяйка дома.\n"
+                "<@&1573680796475195482> — комьюнити менеджер.\n"
+                "<@&1573422768421077063> — порядок на сервере."
+            ),
+            inline=False,
+        )
+        embed.add_field(name="\u3000", value="\u3000", inline=False)
+        embed.add_field(
+            name="Чтобы всем было спокойно",
+            value=(
+                "<@&1573680792679489556> — порядок в чатах и голосе.\n"
+                "<@&1573422776919007424> — порядок в чатах и голосе.\n"
+                "<@&1573422779376865280> — знакомство с новыми участниками."
+            ),
+            inline=False,
+        )
+        embed.add_field(name="\u3000", value="\u3000", inline=False)
+        embed.add_field(
+            name="Чтобы было интересно",
+            value="Хочешь быть рядом? <#1573422995811344466>",
+            inline=False,
+        )
+        await channel.send(embed=embed)
+        await interaction.response.send_message(f"✅ Запощено в {channel.mention}", ephemeral=True)
+
     @app_commands.command(name="post_welcome", description="Запостить embed с кнопкой в канал знакомства")
     @app_commands.describe(channel="Канал куда постить (обычно 👋--знакомство)")
     @app_commands.checks.has_permissions(administrator=True)
