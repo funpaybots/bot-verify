@@ -44,7 +44,6 @@ async def main():
     token, guild_id = _load_config()
 
     intents = discord.Intents.default()
-    intents.members = True
 
     bot = commands.Bot(command_prefix="!", intents=intents)
     bot.guild_id = guild_id
