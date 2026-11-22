@@ -210,6 +210,38 @@ class VerifyView(discord.ui.View):
         self.done = True
 
 
+class BanModal(discord.ui.Modal, title="Причина бана"):
+    reason = discord.ui.TextInput(
+        label="Причина",
+        placeholder="например: спам, нарушение правил...",
+        min_length=1,
+        max_length=200,
+    )
+
+    def __init__(self, member: discord.Member):
+        super().__init__()
+        self.member = member
+
+    async def on_submit(self, interaction: discord.Interaction):
+        guild = interaction.guild
+        member = guild.get_member(self.member.id)
+        try:
+            target = member or discord.Object(id=self.member.id)
+            await guild.ban(target, reason=f"Бан от {interaction.user}: {self.reason.value}", delete_message_days=0)
+        except discord.Forbidden:
+            await interaction.response.send_message("Нет прав для бана.", ephemeral=True)
+            return
+        embed = discord.Embed(
+            title="🔨 Забанен",
+            description=f"<@{self.member.id}> забанен {interaction.user.mention}",
+            color=discord.Color.dark_red(),
+            timestamp=datetime.datetime.now(),
+        )
+        embed.add_field(name="Причина", value=self.reason.value, inline=False)
+        embed.add_field(name="ID", value=str(self.member.id), inline=True)
+        await interaction.response.send_message(embed=embed)
+
+
 class ChangeRoleView(discord.ui.View):
     """Кнопки изменения роли в лог-канале."""
 
@@ -232,6 +264,23 @@ class ChangeRoleView(discord.ui.View):
             await interaction.response.send_message("Нет прав.", ephemeral=True)
             return
         await self._change(interaction, self.male_id, self.female_id, "♂")
+
+    @discord.ui.button(label="🔨 Бан", style=discord.ButtonStyle.danger)
+    async def ban_member(self, interaction: discord.Interaction, button: discord.ui.Button):
+        # Только администраторы и выше
+        admin_ids = [
+            1573422768421077063,  # Администратор
+            1573680796475195482,  # Главный администратор
+            1573422762205257763,  # Владелец
+            1573680800233426984,  # Владелица
+        ]
+        is_admin = interaction.user.guild_permissions.administrator or any(
+            r.id in admin_ids for r in interaction.user.roles
+        )
+        if not is_admin:
+            await interaction.response.send_message("Только администраторы могут банить.", ephemeral=True)
+            return
+        await interaction.response.send_modal(BanModal(self.member))
 
     async def _change(self, interaction: discord.Interaction, give_id: int, remove_id: int, symbol: str):
         guild = interaction.guild
