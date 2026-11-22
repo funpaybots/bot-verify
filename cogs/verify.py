@@ -251,5 +251,62 @@ class Verify(commands.Cog):
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
+class CallHelperView(discord.ui.View):
+    """Persistent кнопка «Вызвать Хелпера» в канале знакомства."""
+
+    def __init__(self):
+        super().__init__(timeout=None)
+
+    @discord.ui.button(
+        label="Вызвать Хелпера",
+        style=discord.ButtonStyle.primary,
+        emoji="🐾",
+        custom_id="call_helper",
+    )
+    async def call_helper(self, interaction: discord.Interaction, button: discord.ui.Button):
+        member = interaction.user
+
+        # Не даём спамить — проверяем уже верифицирован ли
+        male_id, female_id, log_ch_id = _get_ids(interaction.guild.id)
+        if _already_verified(member, male_id, female_id):
+            await interaction.response.send_message(
+                "Ты уже верифицирован 🐾", ephemeral=True
+            )
+            return
+
+        # Найти голосовой канал
+        voice_name = "не в войсе"
+        if member.voice and member.voice.channel:
+            voice_name = member.voice.channel.name
+
+        # Пинг хелперов в канал логов
+        cfg = load(SETTINGS_FILE, {}).get(str(interaction.guild.id), {})
+        log_ch_id_int = cfg.get("log_channel_id")
+        staff_ch_id   = cfg.get("staff_channel_id") or log_ch_id_int
+
+        embed = discord.Embed(
+            title="🔔 Нужна верификация",
+            description=f"{member.mention} ждёт хелпера",
+            color=discord.Color.from_str("#a9c9ff"),
+        )
+        embed.set_thumbnail(url=member.display_avatar.url)
+        embed.add_field(name="Участник", value=f"{member} (`{member.id}`)", inline=False)
+        embed.add_field(name="Проходка", value=voice_name, inline=True)
+
+        # Найти роль хелпера для пинга
+        helper_role = discord.utils.get(interaction.guild.roles, name="Хелпер")
+        ping = helper_role.mention if helper_role else "@Хелпер"
+
+        if staff_ch_id:
+            ch = interaction.guild.get_channel(int(staff_ch_id))
+            if ch:
+                await ch.send(content=ping, embed=embed)
+
+        await interaction.response.send_message(
+            "Позвал хелпера — жди в проходке 🐾", ephemeral=True
+        )
+
+
 async def setup(bot: commands.Bot):
+    bot.add_view(CallHelperView())
     await bot.add_cog(Verify(bot))
