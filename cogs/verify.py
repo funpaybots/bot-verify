@@ -173,13 +173,17 @@ class VerifyView(discord.ui.View):
             result_embed.set_thumbnail(url=self.member.display_avatar.url)
             result_embed.add_field(name="ID", value=str(self.member.id), inline=True)
             result_embed.add_field(name="Роль", value=role.mention, inline=True)
+            result_embed.add_field(name="Хелпер", value=interaction.user.mention, inline=True)
             await edit(result_embed)
 
-            # Лог в канал
+            # Лог в канал с кнопкой изменить роль
             if log_ch_id:
                 log_ch = guild.get_channel(int(log_ch_id))
                 if log_ch:
-                    await log_ch.send(embed=result_embed)
+                    await log_ch.send(
+                        embed=result_embed,
+                        view=ChangeRoleView(self.member, male_id, female_id),
+                    )
 
     @discord.ui.button(label="Девушка", style=discord.ButtonStyle.primary, emoji="🐾")
     async def female(self, interaction: discord.Interaction, button: discord.ui.Button):
@@ -204,6 +208,60 @@ class VerifyView(discord.ui.View):
 
     async def on_timeout(self):
         self.done = True
+
+
+class ChangeRoleView(discord.ui.View):
+    """Кнопки изменения роли в лог-канале."""
+
+    def __init__(self, member: discord.Member, male_id: int, female_id: int):
+        super().__init__(timeout=None)
+        self.member = member
+        self.male_id = male_id
+        self.female_id = female_id
+
+    @discord.ui.button(label="Сменить на ♀", style=discord.ButtonStyle.primary, emoji="🐾")
+    async def set_female(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not _is_staff(interaction.user):
+            await interaction.response.send_message("Нет прав.", ephemeral=True)
+            return
+        await self._change(interaction, self.female_id, self.male_id, "♀")
+
+    @discord.ui.button(label="Сменить на ♂", style=discord.ButtonStyle.primary, emoji="🐾")
+    async def set_male(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not _is_staff(interaction.user):
+            await interaction.response.send_message("Нет прав.", ephemeral=True)
+            return
+        await self._change(interaction, self.male_id, self.female_id, "♂")
+
+    async def _change(self, interaction: discord.Interaction, give_id: int, remove_id: int, symbol: str):
+        guild = interaction.guild
+        member = guild.get_member(self.member.id)
+        if not member:
+            await interaction.response.send_message("Участник покинул сервер.", ephemeral=True)
+            return
+        give_role   = guild.get_role(give_id)
+        remove_role = guild.get_role(remove_id)
+        try:
+            if remove_role and remove_role in member.roles:
+                await member.remove_roles(remove_role, reason=f"Смена роли от {interaction.user}")
+            if give_role:
+                await member.add_roles(give_role, reason=f"Смена роли от {interaction.user}")
+        except discord.Forbidden:
+            await interaction.response.send_message("Нет прав изменять роли.", ephemeral=True)
+            return
+        # Обновить embed
+        old_embed = interaction.message.embeds[0] if interaction.message.embeds else None
+        new_embed = discord.Embed(
+            title=f"✅ Верифицирован как {symbol}",
+            description=old_embed.description if old_embed else member.mention,
+            color=discord.Color.green(),
+            timestamp=datetime.datetime.now(),
+        )
+        new_embed.set_thumbnail(url=member.display_avatar.url)
+        new_embed.add_field(name="ID", value=str(member.id), inline=True)
+        new_embed.add_field(name="Роль", value=give_role.mention if give_role else symbol, inline=True)
+        new_embed.add_field(name="Изменил", value=interaction.user.mention, inline=True)
+        await interaction.response.edit_message(embed=new_embed, view=self)
 
 
 class PickMemberView(discord.ui.View):
