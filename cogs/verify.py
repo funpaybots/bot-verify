@@ -118,6 +118,12 @@ class VerifyView(discord.ui.View):
             result_embed.add_field(name="ID", value=str(self.member.id), inline=True)
             await edit(result_embed)
 
+            # Бан участника
+            try:
+                await guild.ban(self.member, reason=f"Недопуск: {reason}", delete_message_days=0)
+            except discord.Forbidden:
+                pass
+
             # Лог в канал
             if log_ch_id:
                 log_ch = guild.get_channel(int(log_ch_id))
