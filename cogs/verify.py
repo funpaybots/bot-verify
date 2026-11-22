@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""Верификация: хелпер вызывает /verify @user male/female — бот выдаёт роль."""
+"""Верификация: /verify @user — хелпер видит ephemeral с кнопками Девушка/Парень/Недопуск."""
 
 import datetime
 import discord
@@ -11,11 +11,9 @@ from storage import load, save
 SETTINGS_FILE = "settings.json"
 LOG_FILE = "verify_log.json"
 
-# Роли по умолчанию (сервер Roet)
 DEFAULT_MALE_ID   = 1573422846485594193  # ♂
 DEFAULT_FEMALE_ID = 1573422843574886453  # ♀
 
-# Роли, которым разрешено верифицировать
 STAFF_ROLE_IDS = [
     1573422779376865280,  # Хелпер
     1573422776919007424,  # Модератор
@@ -37,89 +35,156 @@ def _already_verified(member: discord.Member, male_id: int, female_id: int) -> b
     return any(r.id in (male_id, female_id) for r in member.roles)
 
 
+def _get_ids(guild_id: int):
+    cfg = load(SETTINGS_FILE, {}).get(str(guild_id), {})
+    return (
+        int(cfg.get("role_male",   DEFAULT_MALE_ID)),
+        int(cfg.get("role_female", DEFAULT_FEMALE_ID)),
+        cfg.get("log_channel_id"),
+    )
+
+
+def _make_embed(member: discord.Member, voice_name: str) -> discord.Embed:
+    embed = discord.Embed(
+        title="Верификация",
+        color=discord.Color.from_str("#a9c9ff"),
+    )
+    embed.set_thumbnail(url=member.display_avatar.url)
+    embed.add_field(name="🐾 Участник", value=f"{member.mention}", inline=False)
+    embed.add_field(name="ID", value=str(member.id), inline=True)
+    embed.add_field(name="Проходка", value=voice_name, inline=True)
+    return embed
+
+
+class VerifyView(discord.ui.View):
+    def __init__(self, member: discord.Member, verifier: discord.Member):
+        super().__init__(timeout=300)
+        self.member = member
+        self.verifier = verifier
+        self.done = False
+
+    async def _apply(
+        self,
+        interaction: discord.Interaction,
+        gender: str | None,  # 'male', 'female', None=reject
+    ):
+        if self.done:
+            await interaction.response.defer()
+            return
+        self.done = True
+        self.stop()
+
+        guild = interaction.guild
+        male_id, female_id, log_ch_id = _get_ids(guild.id)
+
+        if gender is None:
+            # Недопуск
+            result_embed = discord.Embed(
+                title="❌ Недопуск",
+                description=f"{self.member.mention} получил отказ от {interaction.user.mention}",
+                color=discord.Color.red(),
+                timestamp=datetime.datetime.now(),
+            )
+            result_embed.set_thumbnail(url=self.member.display_avatar.url)
+            await interaction.response.edit_message(embed=result_embed, view=None)
+        else:
+            role_id = male_id if gender == "male" else female_id
+            role = guild.get_role(role_id)
+            symbol = "♂ Парень" if gender == "male" else "♀ Девушка"
+
+            if not role:
+                await interaction.response.edit_message(
+                    content=f"Роль не найдена (id={role_id}).", embed=None, view=None
+                )
+                return
+
+            try:
+                await self.member.add_roles(role, reason=f"Верификация от {interaction.user}")
+            except discord.Forbidden:
+                await interaction.response.edit_message(
+                    content="Нет прав выдавать роль — проверь позицию роли бота.", embed=None, view=None
+                )
+                return
+
+            # Лог в файл
+            log = load(LOG_FILE, {})
+            log[str(self.member.id)] = {
+                "verified_by": str(interaction.user),
+                "verified_by_id": interaction.user.id,
+                "gender": gender,
+                "timestamp": datetime.datetime.now().strftime("%d.%m.%Y %H:%M"),
+            }
+            save(LOG_FILE, log)
+
+            result_embed = discord.Embed(
+                title=f"✅ Верифицирован как {symbol}",
+                description=f"{self.member.mention} верифицирован {interaction.user.mention}",
+                color=discord.Color.green(),
+                timestamp=datetime.datetime.now(),
+            )
+            result_embed.set_thumbnail(url=self.member.display_avatar.url)
+            result_embed.add_field(name="ID", value=str(self.member.id), inline=True)
+            result_embed.add_field(name="Роль", value=role.mention, inline=True)
+            await interaction.response.edit_message(embed=result_embed, view=None)
+
+            # Лог в канал
+            if log_ch_id:
+                log_ch = guild.get_channel(int(log_ch_id))
+                if log_ch:
+                    await log_ch.send(embed=result_embed)
+
+    @discord.ui.button(label="Девушка", style=discord.ButtonStyle.primary, emoji="🐾")
+    async def female(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not _is_staff(interaction.user):
+            await interaction.response.send_message("Нет прав.", ephemeral=True)
+            return
+        await self._apply(interaction, "female")
+
+    @discord.ui.button(label="Парень", style=discord.ButtonStyle.primary, emoji="🐾")
+    async def male(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not _is_staff(interaction.user):
+            await interaction.response.send_message("Нет прав.", ephemeral=True)
+            return
+        await self._apply(interaction, "male")
+
+    @discord.ui.button(label="Недопуск", style=discord.ButtonStyle.danger, emoji="✖️")
+    async def reject(self, interaction: discord.Interaction, button: discord.ui.Button):
+        if not _is_staff(interaction.user):
+            await interaction.response.send_message("Нет прав.", ephemeral=True)
+            return
+        await self._apply(interaction, None)
+
+    async def on_timeout(self):
+        self.done = True
+
+
 class Verify(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
 
     @app_commands.command(name="verify", description="Верифицировать участника (только стафф)")
-    @app_commands.describe(
-        member="Участник которого верифицируем",
-        gender="Пол: male (♂) или female (♀)",
-    )
-    @app_commands.choices(gender=[
-        app_commands.Choice(name="♂ Парень", value="male"),
-        app_commands.Choice(name="♀ Девушка", value="female"),
-    ])
-    async def verify(
-        self,
-        interaction: discord.Interaction,
-        member: discord.Member,
-        gender: app_commands.Choice[str],
-    ):
-        # Проверка прав
+    @app_commands.describe(member="Участник которого верифицируем")
+    async def verify(self, interaction: discord.Interaction, member: discord.Member):
         if not _is_staff(interaction.user):
             await interaction.response.send_message("Нет прав.", ephemeral=True)
             return
 
-        # Получить id ролей из настроек или дефолт
-        cfg = load(SETTINGS_FILE, {}).get(str(interaction.guild.id), {})
-        male_id   = int(cfg.get("role_male",   DEFAULT_MALE_ID))
-        female_id = int(cfg.get("role_female", DEFAULT_FEMALE_ID))
-        log_ch_id = cfg.get("log_channel_id")
+        male_id, female_id, _ = _get_ids(interaction.guild.id)
 
-        # Уже верифицирован?
         if _already_verified(member, male_id, female_id):
             await interaction.response.send_message(
                 f"{member.mention} уже верифицирован.", ephemeral=True
             )
             return
 
-        # Выдать роль
-        role_id = male_id if gender.value == "male" else female_id
-        role = interaction.guild.get_role(role_id)
-        if not role:
-            await interaction.response.send_message(
-                f"Роль не найдена (id={role_id}). Проверь /setup_verify.", ephemeral=True
-            )
-            return
+        # Найти голосовой канал участника
+        voice_name = "🔇 · не в войсе"
+        if member.voice and member.voice.channel:
+            voice_name = f"🔊 · {member.voice.channel.name}"
 
-        try:
-            await member.add_roles(role, reason=f"Верификация от {interaction.user}")
-        except discord.Forbidden:
-            await interaction.response.send_message(
-                "Нет прав выдавать роль. Проверь позицию роли бота.", ephemeral=True
-            )
-            return
-
-        symbol = "♂" if gender.value == "male" else "♀"
-
-        # Лог в файл
-        log = load(LOG_FILE, {})
-        log[str(member.id)] = {
-            "verified_by": str(interaction.user),
-            "verified_by_id": interaction.user.id,
-            "gender": gender.value,
-            "timestamp": datetime.datetime.now().strftime("%d.%m.%Y %H:%M"),
-        }
-        save(LOG_FILE, log)
-
-        # Ответ хелперу
-        embed = discord.Embed(
-            title="✅ Верификация",
-            description=f"{member.mention} верифицирован как **{symbol}**",
-            color=discord.Color.green(),
-            timestamp=datetime.datetime.now(),
-        )
-        embed.set_thumbnail(url=member.display_avatar.url)
-        embed.add_field(name="Хелпер", value=interaction.user.mention, inline=True)
-        embed.add_field(name="Роль", value=role.mention, inline=True)
-        await interaction.response.send_message(embed=embed)
-
-        # Лог в канал
-        if log_ch_id:
-            log_ch = interaction.guild.get_channel(int(log_ch_id))
-            if log_ch:
-                await log_ch.send(embed=embed)
+        embed = _make_embed(member, voice_name)
+        view = VerifyView(member=member, verifier=interaction.user)
+        await interaction.response.send_message(embed=embed, view=view, ephemeral=True)
 
     @app_commands.command(name="unverify", description="Снять верификацию (только стафф)")
     @app_commands.describe(member="Участник")
@@ -128,10 +193,7 @@ class Verify(commands.Cog):
             await interaction.response.send_message("Нет прав.", ephemeral=True)
             return
 
-        cfg = load(SETTINGS_FILE, {}).get(str(interaction.guild.id), {})
-        male_id   = int(cfg.get("role_male",   DEFAULT_MALE_ID))
-        female_id = int(cfg.get("role_female", DEFAULT_FEMALE_ID))
-
+        male_id, female_id, _ = _get_ids(interaction.guild.id)
         roles_to_remove = [r for r in member.roles if r.id in (male_id, female_id)]
         if not roles_to_remove:
             await interaction.response.send_message(
@@ -148,16 +210,13 @@ class Verify(commands.Cog):
     @app_commands.checks.has_permissions(manage_guild=True)
     async def verify_stats(self, interaction: discord.Interaction):
         log = load(LOG_FILE, {})
-        total = len(log)
+        total  = len(log)
         male   = sum(1 for v in log.values() if v.get("gender") == "male")
         female = sum(1 for v in log.values() if v.get("gender") == "female")
-        embed = discord.Embed(
-            title="📊 Статистика верификаций",
-            color=discord.Color.from_str("#a9c9ff"),
-        )
-        embed.add_field(name="Всего", value=str(total), inline=True)
-        embed.add_field(name="♂", value=str(male), inline=True)
-        embed.add_field(name="♀", value=str(female), inline=True)
+        embed = discord.Embed(title="📊 Статистика верификаций", color=discord.Color.from_str("#a9c9ff"))
+        embed.add_field(name="Всего", value=str(total),  inline=True)
+        embed.add_field(name="♂",     value=str(male),   inline=True)
+        embed.add_field(name="♀",     value=str(female), inline=True)
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
     @app_commands.command(name="setup_verify", description="Настроить роли и канал логов верификации")
