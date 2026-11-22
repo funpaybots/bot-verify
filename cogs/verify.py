@@ -56,6 +56,22 @@ def _make_embed(member: discord.Member, voice_name: str) -> discord.Embed:
     return embed
 
 
+class RejectModal(discord.ui.Modal, title="Причина недопуска"):
+    reason = discord.ui.TextInput(
+        label="Причина",
+        placeholder="например: не ответил, подозрительный аккаунт...",
+        min_length=1,
+        max_length=200,
+    )
+
+    def __init__(self, view: "VerifyView"):
+        super().__init__()
+        self.parent_view = view
+
+    async def on_submit(self, interaction: discord.Interaction):
+        await self.parent_view._apply(interaction, None, reason=self.reason.value)
+
+
 class VerifyView(discord.ui.View):
     def __init__(self, member: discord.Member, verifier: discord.Member):
         super().__init__(timeout=300)
@@ -67,6 +83,7 @@ class VerifyView(discord.ui.View):
         self,
         interaction: discord.Interaction,
         gender: str | None,  # 'male', 'female', None=reject
+        reason: str = "",
     ):
         if self.done:
             await interaction.response.defer()
@@ -86,7 +103,17 @@ class VerifyView(discord.ui.View):
                 timestamp=datetime.datetime.now(),
             )
             result_embed.set_thumbnail(url=self.member.display_avatar.url)
+            if reason:
+                result_embed.add_field(name="Причина", value=reason, inline=False)
+            result_embed.add_field(name="ID", value=str(self.member.id), inline=True)
             await interaction.response.edit_message(embed=result_embed, view=None)
+
+            # Лог в канал
+            _, _, log_ch_id = _get_ids(interaction.guild.id)
+            if log_ch_id:
+                log_ch = interaction.guild.get_channel(int(log_ch_id))
+                if log_ch:
+                    await log_ch.send(embed=result_embed)
         else:
             role_id = male_id if gender == "male" else female_id
             role = guild.get_role(role_id)
@@ -152,7 +179,7 @@ class VerifyView(discord.ui.View):
         if not _is_staff(interaction.user):
             await interaction.response.send_message("Нет прав.", ephemeral=True)
             return
-        await self._apply(interaction, None)
+        await interaction.response.send_modal(RejectModal(self))
 
     async def on_timeout(self):
         self.done = True
