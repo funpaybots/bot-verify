@@ -362,19 +362,10 @@ class Verify(commands.Cog):
         embed.add_field(name="♀",     value=str(female), inline=True)
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
-    @app_commands.command(name="setup_verify_panel", description="Поставить панель верификации в канал стаффа")
-    @app_commands.describe(channel="Канал где будет панель")
-    @app_commands.checks.has_permissions(administrator=True)
-    async def setup_verify_panel(self, interaction: discord.Interaction, channel: discord.TextChannel):
-        embed = discord.Embed(
-            title="🔑 Доступ",
-            description="Участники ожидающие верификации. Выбери из списка.",
-            color=discord.Color.from_str("#a9c9ff"),
-        )
-        await channel.send(embed=embed, view=VerifyPanelView())
-        await interaction.response.send_message(f"✅ Панель поставлена в {channel.mention}", ephemeral=True)
+    @app_commands.command(name="setup_verify", description="Настроить верификацию и поставить панель")
     @app_commands.describe(
         log_channel="Канал для логов верификаций",
+        panel_channel="Канал стаффа где ставится панель с дропдауном",
         role_male="Роль ♂",
         role_female="Роль ♀",
     )
@@ -383,6 +374,7 @@ class Verify(commands.Cog):
         self,
         interaction: discord.Interaction,
         log_channel: discord.TextChannel,
+        panel_channel: discord.TextChannel = None,
         role_male: discord.Role = None,
         role_female: discord.Role = None,
     ):
@@ -395,8 +387,18 @@ class Verify(commands.Cog):
             cfg["role_female"] = role_female.id
         save(SETTINGS_FILE, data)
 
+        if panel_channel:
+            panel_embed = discord.Embed(
+                title="🔑 Доступ",
+                description="Участники ожидающие верификации. Выбери из списка.",
+                color=discord.Color.from_str("#a9c9ff"),
+            )
+            await panel_channel.send(embed=panel_embed, view=VerifyPanelView())
+
         embed = discord.Embed(title="✅ Верификация настроена", color=discord.Color.green())
         embed.add_field(name="Логи", value=log_channel.mention, inline=True)
+        if panel_channel:
+            embed.add_field(name="Панель", value=panel_channel.mention, inline=True)
         if role_male:
             embed.add_field(name="♂", value=role_male.mention, inline=True)
         if role_female:
