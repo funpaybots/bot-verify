@@ -128,6 +128,42 @@ check("give", sc.get_entry(777, 4)["coins"] == 10)
 sc.give(777, 4, -100)
 check("take floors at zero", sc.get_entry(777, 4)["coins"] == 0)
 
+# ── Магазин ───────────────────────────────────────────────────────────────────
+check("role price default", sc.role_price(999) == sc.DEFAULT_ROLE_PRICE)
+check("dayoff price default", sc.dayoff_price(999) == sc.DEFAULT_DAYOFF_PRICE)
+check("dayoff days default", sc.dayoff_days(999) == sc.DEFAULT_DAYOFF_DAYS)
+
+sc.set_settings(777, staff_role_price=150, staff_dayoff_price=700, staff_dayoff_days=3)
+check("role price setting", sc.role_price(777) == 150)
+check("dayoff price setting", sc.dayoff_price(777) == 700)
+check("dayoff days setting", sc.dayoff_days(777) == 3)
+
+# Списание
+sc.give(777, 4, 500)
+check("spend ok", sc.spend(777, 4, 200) and sc.get_entry(777, 4)["coins"] == 300)
+check("spend too much", not sc.spend(777, 4, 999) and sc.get_entry(777, 4)["coins"] == 300)
+
+# Отгул
+check("not on dayoff", not sc.on_dayoff(777, 4))
+sc.set_dayoff(777, 4, _dt.datetime.now().timestamp() + 3600)
+check("on dayoff", sc.on_dayoff(777, 4))
+check("dayoff text", "в" in sc.dayoff_until_str(777, 4), sc.dayoff_until_str(777, 4))
+
+sc.give(777, 5, 10)
+sc.set_dayoff(777, 5, _dt.datetime.now().timestamp() - 10)
+expired = [uid for uid, _ in sc.expired_dayoffs(777)]
+check("expired detected", 5 in expired and 4 not in expired, str(expired))
+sc.clear_dayoff(777, 5)
+check("clear dayoff", not sc.on_dayoff(777, 5))
+check("expired empty after clear", sc.expired_dayoffs(777) == [], str(sc.expired_dayoffs(777)))
+sc.clear_dayoff(777, 4)
+
+# voice_drop не пишет время
+sc.voice_start(777, 6)
+sc._voice_since[(777, 6)] -= 30
+sc.voice_drop(777, 6)
+check("voice drop no time", sc.voice_live(777, 6) == 0 and sc.get_entry(777, 6)["voice_total"] == 0)
+
 # Сохранение на диск
 sc.save_data(force=True)
 sc._cache = None
@@ -139,10 +175,35 @@ import cogs.staff as staff_cog
 import cogs.verify as verify_cog
 
 names = {c.name for c in staff_cog.Staff.__cog_app_commands__}
-check("staff commands", {"staff_stats", "staff_top", "staff_config", "staff_give", "staff_take"} <= names, str(sorted(names)))
+check(
+    "staff commands",
+    {"staff_stats", "staff_top", "staff_config", "staff_give", "staff_take", "staff_shop"} <= names,
+    str(sorted(names)),
+)
 check("staff setup", callable(staff_cog.setup))
 check("verify setup", callable(verify_cog.setup))
 check("verify credit imported", verify_cog.add_verify_credit is sc.add_verify)
+check("dayoff block helper", callable(verify_cog._dayoff_block))
+
+# Вьюхи магазина собираются
+shop_view = staff_cog.ShopView()
+check("shop view buttons", len(shop_view.children) == 2, str(len(shop_view.children)))
+check("role color view", len(staff_cog.RoleColorView(100).children) == 1)
+
+# Проверка блокировки в отгуле без Discord: подсовываем фейковый interaction
+class _FakeUser:
+    id = 4
+class _FakeGuild:
+    id = 777
+class _FakeInteraction:
+    guild = _FakeGuild()
+    user = _FakeUser()
+
+sc.set_dayoff(777, 4, _dt.datetime.now().timestamp() + 3600)
+block_msg = verify_cog._dayoff_block(_FakeInteraction())
+check("dayoff blocks verify", "отгуле" in block_msg, block_msg[:40])
+sc.clear_dayoff(777, 4)
+check("no block without dayoff", verify_cog._dayoff_block(_FakeInteraction()) == "")
 
 verify_names = {c.name for c in verify_cog.Verify.__cog_app_commands__}
 check("verify commands intact", {"verify", "unverify", "verify_stats", "setup_verify"} <= verify_names)

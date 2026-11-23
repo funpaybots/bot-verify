@@ -177,6 +177,79 @@ def give(guild_id: int, user_id: int, amount: int) -> int:
     return e["coins"]
 
 
+# ── Магазин ───────────────────────────────────────────────────────────────────
+
+DEFAULT_ROLE_PRICE = 200
+DEFAULT_DAYOFF_PRICE = 800
+DEFAULT_DAYOFF_DAYS = 2
+
+
+def role_price(guild_id: int) -> int:
+    return max(0, int(_settings(guild_id).get("staff_role_price", DEFAULT_ROLE_PRICE)))
+
+
+def dayoff_price(guild_id: int) -> int:
+    return max(0, int(_settings(guild_id).get("staff_dayoff_price", DEFAULT_DAYOFF_PRICE)))
+
+
+def dayoff_days(guild_id: int) -> int:
+    return max(1, int(_settings(guild_id).get("staff_dayoff_days", DEFAULT_DAYOFF_DAYS)))
+
+
+def dayoff_role_id(guild_id: int) -> int:
+    return int(_settings(guild_id).get("dayoff_role_id", 0) or 0)
+
+
+def spend(guild_id: int, user_id: int, amount: int) -> bool:
+    """Списать лапки. False — не хватило."""
+    e = get_entry(guild_id, user_id)
+    if int(e.get("coins", 0)) < amount:
+        return False
+    e["coins"] = int(e.get("coins", 0)) - int(amount)
+    save_data(force=True)
+    return True
+
+
+def dayoff_until(guild_id: int, user_id: int) -> float:
+    return float(get_entry(guild_id, user_id).get("dayoff_until", 0) or 0)
+
+
+def on_dayoff(guild_id: int, user_id: int) -> bool:
+    return dayoff_until(guild_id, user_id) > time.time()
+
+
+def dayoff_until_str(guild_id: int, user_id: int) -> str:
+    """«25.11 в 14:30» или пустая строка, если отгула нет."""
+    until = dayoff_until(guild_id, user_id)
+    if until <= time.time():
+        return ""
+    return datetime.datetime.fromtimestamp(until).strftime("%d.%m в %H:%M")
+
+
+def set_dayoff(guild_id: int, user_id: int, until_ts: float) -> None:
+    e = get_entry(guild_id, user_id)
+    e["dayoff_until"] = float(until_ts)
+    save_data(force=True)
+
+
+def clear_dayoff(guild_id: int, user_id: int) -> None:
+    e = get_entry(guild_id, user_id)
+    e.pop("dayoff_until", None)
+    save_data(force=True)
+
+
+def expired_dayoffs(guild_id: int, now: float = None):
+    """[(user_id, until)] — у кого отгул уже кончился."""
+    now = time.time() if now is None else now
+    guild = _data().get(str(guild_id), {})
+    result = []
+    for uid, info in guild.items():
+        until = float(info.get("dayoff_until", 0) or 0)
+        if until and until <= now:
+            result.append((int(uid), until))
+    return result
+
+
 # ── Время в проходке ──────────────────────────────────────────────────────────
 
 def voice_start(guild_id: int, user_id: int) -> None:
@@ -206,6 +279,11 @@ def voice_live(guild_id: int, user_id: int) -> int:
     if not started:
         return 0
     return max(0, int(time.time() - started))
+
+
+def voice_drop(guild_id: int, user_id: int) -> None:
+    """Перестать считать время без записи (например, ушёл в отгул)."""
+    _voice_since.pop((guild_id, user_id), None)
 
 
 def voice_reset_tracking() -> None:

@@ -10,6 +10,8 @@ from storage import load, save
 from cogs.staff_core import (
     STAFF_ROLE_IDS,
     add_verify as add_verify_credit,
+    dayoff_until_str,
+    on_dayoff,
     staff_currency,
     top as staff_top,
 )
@@ -29,6 +31,20 @@ def _is_staff(member: discord.Member) -> bool:
 
 def _already_verified(member: discord.Member, male_id: int, female_id: int) -> bool:
     return any(r.id in (male_id, female_id) for r in member.roles)
+
+
+def _dayoff_block(interaction: discord.Interaction) -> str:
+    """Текст отказа, если хелпер в отгуле. Пустая строка — можно работать."""
+    guild = interaction.guild
+    if guild is None or interaction.user is None:
+        return ""
+    until = dayoff_until_str(guild.id, interaction.user.id)
+    if until:
+        return (
+            f"🌴 Ты в отгуле до **{until}** — верификации закрыты.\n"
+            "Сидеть в проходке можно, но смена не капает."
+        )
+    return ""
 
 
 def _get_ids(guild_id: int):
@@ -193,6 +209,10 @@ class VerifyView(discord.ui.View):
         if not _is_staff(interaction.user):
             await interaction.response.send_message("Нет прав.", ephemeral=True)
             return
+        block = _dayoff_block(interaction)
+        if block:
+            await interaction.response.send_message(block, ephemeral=True)
+            return
         await self._apply(interaction, "female")
 
     @discord.ui.button(label="Парень", style=discord.ButtonStyle.primary, emoji="🐾")
@@ -200,12 +220,20 @@ class VerifyView(discord.ui.View):
         if not _is_staff(interaction.user):
             await interaction.response.send_message("Нет прав.", ephemeral=True)
             return
+        block = _dayoff_block(interaction)
+        if block:
+            await interaction.response.send_message(block, ephemeral=True)
+            return
         await self._apply(interaction, "male")
 
     @discord.ui.button(label="Недопуск", style=discord.ButtonStyle.danger, emoji="✖️")
     async def reject(self, interaction: discord.Interaction, button: discord.ui.Button):
         if not _is_staff(interaction.user):
             await interaction.response.send_message("Нет прав.", ephemeral=True)
+            return
+        block = _dayoff_block(interaction)
+        if block:
+            await interaction.response.send_message(block, ephemeral=True)
             return
         await interaction.response.send_modal(RejectModal(self))
 
@@ -336,6 +364,10 @@ class PickMemberView(discord.ui.View):
         if not member:
             await interaction.response.send_message("Участник не найден.", ephemeral=True)
             return
+        block = _dayoff_block(interaction)
+        if block:
+            await interaction.response.send_message(block, ephemeral=True)
+            return
         male_id, female_id, _ = _get_ids(interaction.guild.id)
         if _already_verified(member, male_id, female_id):
             await interaction.response.send_message(f"{member.mention} уже верифицирован.", ephemeral=True)
@@ -389,6 +421,10 @@ class VerifyPanelView(discord.ui.View):
         if not _is_staff(interaction.user):
             await interaction.response.send_message("Нет прав.", ephemeral=True)
             return
+        block = _dayoff_block(interaction)
+        if block:
+            await interaction.response.send_message(block, ephemeral=True)
+            return
         male_id, female_id, _ = _get_ids(interaction.guild.id)
         options = []
         for vc in interaction.guild.voice_channels:
@@ -417,6 +453,11 @@ class Verify(commands.Cog):
     async def verify(self, interaction: discord.Interaction, member: discord.Member):
         if not _is_staff(interaction.user):
             await interaction.response.send_message("Нет прав.", ephemeral=True)
+            return
+
+        block = _dayoff_block(interaction)
+        if block:
+            await interaction.response.send_message(block, ephemeral=True)
             return
 
         male_id, female_id, _ = _get_ids(interaction.guild.id)
