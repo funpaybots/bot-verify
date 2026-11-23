@@ -208,7 +208,42 @@ sc.clear_dayoff(777, 4)
 check("no block without dayoff", verify_cog._dayoff_block(_FakeInteraction()) == "")
 
 verify_names = {c.name for c in verify_cog.Verify.__cog_app_commands__}
-check("verify commands intact", {"verify", "unverify", "verify_stats", "setup_verify"} <= verify_names)
+check("verify commands intact", {"verify", "unverify", "verify_stats", "setup_verify", "post_map"} <= verify_names)
+
+# Поиск каналов для карты сервера
+class _FakeCh:
+    def __init__(self, cid, name):
+        self.id = cid
+        self.name = name
+
+
+class _FakeGuildMap:
+    def __init__(self, names):
+        self.text_channels = [_FakeCh(1000 + i, n) for i, n in enumerate(names)]
+        self.voice_channels = []
+
+
+gm = _FakeGuildMap([
+    "📖--котекст", "🏡--нет-грустна", "🎀 | мои-роли", "🧸--наша-команда",
+    "💬--общение", "😹--смешинки", "🤳--селфи", "👥--ищу-компанию",
+    "💞--знакомства", "🐾--питомцы", "🏞--прогулки", "🎨--рисунки",
+    "🥇--достижения", "📅--собираемся", "🎧--плеер", "🧺--корзина",
+    "➕ · Создать уголок", "🔴 · Войти", "🌿--незнакомство",
+    "🎁--спонсорские-пакеты",
+])
+
+taken = set()
+found = {}
+for _title, entries in verify_cog.MAP_SECTIONS:
+    for pattern, _e, _d in entries:
+        found[pattern] = verify_cog._find_channel(gm, pattern, taken)
+        if found[pattern]:
+            taken.add(found[pattern].id)
+
+missed = [p for p, ch in found.items() if ch is None]
+check("map resolves all", not missed, "missed: " + ", ".join(missed))
+check("map korzina", found["корзина"].name == "🧺--корзина")
+check("map unique", len(taken) == len(found))
 
 # Кириллица
 if "стафф" not in verify_cog.Verify.__cog_app_commands__[0].description.lower() and False:

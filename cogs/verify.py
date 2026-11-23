@@ -2,6 +2,9 @@
 """Верификация: /verify @user — хелпер видит ephemeral с кнопками Девушка/Парень/Недопуск."""
 
 import datetime
+import difflib
+import re
+
 import discord
 from discord import app_commands
 from discord.ext import commands
@@ -54,6 +57,84 @@ def _get_ids(guild_id: int):
         int(cfg.get("role_female", DEFAULT_FEMALE_ID)),
         cfg.get("log_channel_id"),
     )
+
+
+# ── Карта сервера ─────────────────────────────────────────────────────────────
+
+MAP_SECTIONS = [
+    (
+        "Твой уютный маршрут",
+        [
+            ("котекст", "📖", "бережно друг к другу"),
+            ("нет-грустна", "🏡", "знакомится"),
+            ("мои-роли", "🎀", "интересы и настроение"),
+            ("наша-команда", "🧸", "кто заботится о доме"),
+        ],
+    ),
+    (
+        "Поболтаем?",
+        [
+            ("общение", "💬", "обо всём"),
+            ("смешинки", "😹", "улыбнуться"),
+            ("селфи", "🤳", "твой сельфи"),
+            ("ищу-компанию", "👥", "найти компанию"),
+            ("знакомства", "💞", "узнать друг друга"),
+            ("питомцы", "🐾", "твои питомцы"),
+            ("прогулки", "🏞", "прогулки и впечатления"),
+            ("рисунки", "🎨", "твои рисунки"),
+            ("достижения", "🥇", "твои достижения"),
+        ],
+    ),
+    (
+        "Планы на вечер",
+        [
+            ("собираемся", "📅", "собираемся на игры и кино"),
+            ("плеер", "🎧", "любимые треки"),
+            ("корзина", "🧺", "печеньки и покупки"),
+            ("Создать уголок", "➕", "свой уголок"),
+            ("Войти", "🔴", "комната для пары"),
+        ],
+    ),
+    (
+        "Печеньки и маленькие радости",
+        [
+            ("незнакомство", "🌿", "личные роли и комнаты за печеньки"),
+            ("спонсорские-пакеты", "🎁", "спонсорские пакеты"),
+        ],
+    ),
+]
+
+MAP_HELPER_LINE = (
+    "С верификацией поможет <@&1573422779376865280>. "
+    "Другие обращения — `/help` у Mod."
+)
+
+
+def _norm_name(s: str) -> str:
+    return re.sub(r"[^a-z0-9а-яё]", "", s.lower())
+
+
+def _find_channel(guild: discord.Guild, pattern: str, taken: set):
+    """Найти канал по примерному имени: точное → вхождение → похожесть."""
+    target = _norm_name(pattern)
+    if not target:
+        return None
+    channels = list(guild.text_channels) + list(guild.voice_channels)
+
+    for ch in channels:
+        if ch.id not in taken and _norm_name(ch.name) == target:
+            return ch
+    for ch in channels:
+        if ch.id not in taken and target in _norm_name(ch.name):
+            return ch
+    best, best_ratio = None, 0.0
+    for ch in channels:
+        if ch.id in taken:
+            continue
+        ratio = difflib.SequenceMatcher(None, target, _norm_name(ch.name)).ratio()
+        if ratio > best_ratio:
+            best, best_ratio = ch, ratio
+    return best if best_ratio >= 0.85 else None
 
 
 def _make_embed(member: discord.Member, voice_name: str) -> discord.Embed:
@@ -649,6 +730,44 @@ class Verify(commands.Cog):
             await asyncio.sleep(0.5)
 
         await interaction.followup.send(f"✅ Правила запощены в {channel.mention}", ephemeral=True)
+
+    @app_commands.command(name="post_map", description="Запостить карту сервера: маршрут, чаты, планы")
+    @app_commands.describe(channel="Канал куда постить карту")
+    @app_commands.default_permissions(administrator=True)
+    @app_commands.checks.has_permissions(administrator=True)
+    async def post_map(self, interaction: discord.Interaction, channel: discord.TextChannel):
+        await interaction.response.defer(ephemeral=True)
+        taken: set = set()
+        unresolved = []
+        embeds = []
+        for title, entries in MAP_SECTIONS:
+            e = discord.Embed(title=title, color=discord.Color.from_str("#a9c9ff"))
+            lines = []
+            for pattern, emoji, desc in entries:
+                ch = _find_channel(interaction.guild, pattern, taken)
+                if ch:
+                    taken.add(ch.id)
+                    lines.append(f"{emoji} {ch.mention} — {desc}")
+                else:
+                    unresolved.append(pattern)
+                    lines.append(f"{emoji} `{pattern}` — {desc}")
+            if title == "Планы на вечер":
+                lines.append(MAP_HELPER_LINE)
+            e.description = "\n".join(lines)
+            embeds.append(e)
+
+        await channel.send(embeds=embeds)
+        if unresolved:
+            await interaction.followup.send(
+                f"✅ Запощено в {channel.mention}. Не нашёл каналы: "
+                + ", ".join(f"`{p}`" for p in unresolved)
+                + " — пришли верные имена, поправлю.",
+                ephemeral=True,
+            )
+        else:
+            await interaction.followup.send(
+                f"✅ Запощено в {channel.mention}, все каналы нашлись.", ephemeral=True
+            )
 
     @app_commands.command(name="setup_verify", description="Настроить верификацию и поставить панель")
     @app_commands.default_permissions(administrator=True)
