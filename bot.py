@@ -65,8 +65,19 @@ async def main():
             if guild_id:
                 guild = discord.Object(id=guild_id)
                 bot.tree.copy_global_to(guild=guild)
+                # Чистим глобальные копии: иначе Discord показывает по две одинаковые команды
+                # (одна глобальная от старых запусков, одна гильдейная).
+                bot.tree.clear_commands(guild=None)
+                try:
+                    await bot.tree.sync()
+                except Exception as e:
+                    logger.warning("Не смог очистить глобальные команды: %s", e)
                 synced = await bot.tree.sync(guild=guild)
-                logger.info("Синкнуто %d команд на гильдию %d", len(synced), guild_id)
+                logger.info(
+                    "Синкнуто %d команд на гильдию %d: %s",
+                    len(synced), guild_id,
+                    ", ".join(sorted(c["name"] for c in synced)),
+                )
             else:
                 synced = await bot.tree.sync()
                 logger.info("Синкнуто %d глобальных команд", len(synced))
@@ -83,5 +94,6 @@ async def main():
     for ext in ("cogs.verify", "cogs.staff"):
         await bot.load_extension(ext)
         logger.info("Cog %s загружен", ext.split(".")[-1])
+    logger.info("Загружены коги: %s", ", ".join(sorted(bot.cogs)))
 
     await bot.start(token)

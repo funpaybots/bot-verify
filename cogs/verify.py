@@ -7,7 +7,12 @@ from discord import app_commands
 from discord.ext import commands
 
 from storage import load, save
-from cogs.staff_core import STAFF_ROLE_IDS, add_verify as add_verify_credit, top as staff_top
+from cogs.staff_core import (
+    STAFF_ROLE_IDS,
+    add_verify as add_verify_credit,
+    staff_currency,
+    top as staff_top,
+)
 
 SETTINGS_FILE = "settings.json"
 LOG_FILE = "verify_log.json"
@@ -157,10 +162,14 @@ class VerifyView(discord.ui.View):
 
             # Лапки стаффу за верификацию
             coins, coins_total = add_verify_credit(guild.id, interaction.user.id)
+            cur = staff_currency(guild.id)
 
             result_embed = discord.Embed(
                 title=f"✅ Верифицирован как {symbol}",
-                description=f"{self.member.mention} верифицирован {interaction.user.mention}",
+                description=(
+                    f"{self.member.mention} верифицирован {interaction.user.mention}\n\n"
+                    f"🐾 **+{coins}** {cur} за верификацию · всего **{coins_total}**"
+                ),
                 color=discord.Color.green(),
                 timestamp=datetime.datetime.now(),
             )
@@ -168,9 +177,6 @@ class VerifyView(discord.ui.View):
             result_embed.add_field(name="ID", value=str(self.member.id), inline=True)
             result_embed.add_field(name="Роль", value=role.mention, inline=True)
             result_embed.add_field(name="Хелпер", value=interaction.user.mention, inline=True)
-            result_embed.add_field(
-                name="Лапки", value=f"+{coins} (всего {coins_total})", inline=True
-            )
             await edit(result_embed)
 
             # Лог в канал с кнопкой изменить роль
