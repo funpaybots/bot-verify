@@ -184,6 +184,8 @@ check("staff setup", callable(staff_cog.setup))
 check("verify setup", callable(verify_cog.setup))
 check("verify credit imported", verify_cog.add_verify_credit is sc.add_verify)
 check("dayoff block helper", callable(verify_cog._dayoff_block))
+check("stats guarded", "is_staff" in staff_cog.Staff.staff_stats.callback.__code__.co_names)
+check("top guarded", "is_staff" in staff_cog.Staff.staff_top.callback.__code__.co_names)
 
 # Вьюхи магазина собираются
 shop_view = staff_cog.ShopView()

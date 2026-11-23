@@ -292,6 +292,9 @@ class Staff(commands.Cog):
     @app_commands.command(name="staff_stats", description="Статистика стаффа: лапки, верификации, время в проходке")
     @app_commands.describe(user="Чья статистика (по умолчанию твоя)")
     async def staff_stats(self, interaction: discord.Interaction, user: discord.Member = None):
+        if not sc.is_staff(interaction.user):
+            await interaction.response.send_message("Статистика только для стаффа.", ephemeral=True)
+            return
         member = user or interaction.user
         guild_id = interaction.guild.id
         e_data = sc.get_entry(guild_id, member.id)
@@ -337,6 +340,9 @@ class Staff(commands.Cog):
 
     @app_commands.command(name="staff_top", description="Топ стаффа по лапкам")
     async def staff_top(self, interaction: discord.Interaction):
+        if not sc.is_staff(interaction.user):
+            await interaction.response.send_message("Топ только для стаффа.", ephemeral=True)
+            return
         guild_id = interaction.guild.id
         rows = sc.top(guild_id, 10)
         if not rows:
@@ -391,6 +397,7 @@ class Staff(commands.Cog):
     # ── Настройка и выдача ────────────────────────────────────────────────
 
     @app_commands.command(name="staff_config", description="Настроить лапки и магазин стаффа")
+    @app_commands.default_permissions(manage_guild=True)
     @app_commands.describe(
         coin="Сколько лапок за одну верификацию",
         currency="Название валюты стаффа",
@@ -432,6 +439,7 @@ class Staff(commands.Cog):
         )
 
     @app_commands.command(name="staff_give", description="Начислить лапки участнику")
+    @app_commands.default_permissions(administrator=True)
     @app_commands.describe(user="Кому", amount="Сколько")
     @app_commands.checks.has_permissions(administrator=True)
     async def staff_give(self, interaction: discord.Interaction, user: discord.Member, amount: app_commands.Range[int, 1]):
@@ -442,6 +450,7 @@ class Staff(commands.Cog):
         )
 
     @app_commands.command(name="staff_take", description="Снять лапки у участника")
+    @app_commands.default_permissions(administrator=True)
     @app_commands.describe(user="У кого", amount="Сколько")
     @app_commands.checks.has_permissions(administrator=True)
     async def staff_take(self, interaction: discord.Interaction, user: discord.Member, amount: app_commands.Range[int, 1]):

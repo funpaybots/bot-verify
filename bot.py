@@ -5,6 +5,7 @@ import logging
 import os
 
 import discord
+from discord import app_commands
 from discord.ext import commands
 
 logger = logging.getLogger(__name__)
@@ -92,6 +93,26 @@ async def main():
             )
         except Exception as e:
             logger.exception("Не удалось синкнуть команды: %s", e)
+
+    @bot.tree.error
+    async def on_app_command_error(interaction: discord.Interaction, error):
+        name = getattr(interaction.command, "name", "?")
+        if isinstance(error, app_commands.MissingPermissions):
+            msg = "🔒 Нужны права: " + ", ".join(error.missing_permissions) + "."
+        elif isinstance(error, app_commands.CheckFailure):
+            msg = "🔒 Эта команда тебе недоступна."
+        elif isinstance(error, app_commands.CommandOnCooldown):
+            msg = f"⏳ Не так часто. Подожди {error.retry_after:.0f} сек."
+        else:
+            logger.error("Ошибка команды /%s: %s", name, error)
+            msg = f"⚠️ Ошибка: `{type(error).__name__}`"
+        try:
+            if interaction.response.is_done():
+                await interaction.followup.send(msg, ephemeral=True)
+            else:
+                await interaction.response.send_message(msg, ephemeral=True)
+        except Exception:
+            logger.exception("Не удалось отправить сообщение об ошибке команды")
 
     # Коги (и persistent-вьюхи из их setup) грузим ДО подключения к гейтвею.
     for ext in ("cogs.verify", "cogs.staff"):

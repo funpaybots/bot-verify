@@ -498,6 +498,7 @@ class Verify(commands.Cog):
         )
 
     @app_commands.command(name="verify_stats", description="Статистика верификаций")
+    @app_commands.default_permissions(manage_guild=True)
     @app_commands.checks.has_permissions(manage_guild=True)
     async def verify_stats(self, interaction: discord.Interaction):
         log = load(LOG_FILE, {})
@@ -524,6 +525,7 @@ class Verify(commands.Cog):
 
     @app_commands.command(name="post_team", description="Запостить состав команды в канал")
     @app_commands.describe(channel="Канал куда постить (обычно 🧸--наша-команда)")
+    @app_commands.default_permissions(administrator=True)
     @app_commands.checks.has_permissions(administrator=True)
     async def post_team(self, interaction: discord.Interaction, channel: discord.TextChannel):
         embed = discord.Embed(
@@ -561,6 +563,7 @@ class Verify(commands.Cog):
 
     @app_commands.command(name="post_welcome", description="Запостить embed с кнопкой в канал знакомства")
     @app_commands.describe(channel="Канал куда постить (обычно 👋--знакомство)")
+    @app_commands.default_permissions(administrator=True)
     @app_commands.checks.has_permissions(administrator=True)
     async def post_welcome(self, interaction: discord.Interaction, channel: discord.TextChannel):
         embed = discord.Embed(
@@ -576,6 +579,7 @@ class Verify(commands.Cog):
 
     @app_commands.command(name="post_rules", description="Запостить правила сервера в канал")
     @app_commands.describe(channel="Канал куда постить правила (обычно 📜--правила)")
+    @app_commands.default_permissions(administrator=True)
     @app_commands.checks.has_permissions(administrator=True)
     async def post_rules(self, interaction: discord.Interaction, channel: discord.TextChannel):
         await interaction.response.defer(ephemeral=True)
@@ -647,6 +651,7 @@ class Verify(commands.Cog):
         await interaction.followup.send(f"✅ Правила запощены в {channel.mention}", ephemeral=True)
 
     @app_commands.command(name="setup_verify", description="Настроить верификацию и поставить панель")
+    @app_commands.default_permissions(administrator=True)
     @app_commands.describe(
         log_channel="Канал для логов верификаций",
         panel_channel="Канал стаффа где ставится панель с дропдауном",
