@@ -92,9 +92,11 @@ class Staff(commands.Cog):
         e_data = sc.get_entry(guild_id, member.id)
         cur = sc.staff_currency(guild_id)
 
+        verified_today, voice_today = sc.day_stat(guild_id, member.id, 1)
+        verified_week, voice_week = sc.day_stat(guild_id, member.id, 7)
         live = sc.voice_live(guild_id, member.id)
-        voice_today = int(e_data.get("voice_today", 0)) + live
-        voice_total = int(e_data.get("voice_total", 0)) + live
+        voice_today += live
+        voice_week += live
         place = sc.place(guild_id, member.id)
 
         embed = _embed(f"🐾 Стафф-профиль — {member.display_name}")
@@ -106,16 +108,17 @@ class Staff(commands.Cog):
         )
         embed.add_field(
             name="Верификаций",
-            value=f"{_fmt(e_data.get('verified_today', 0))} сегодня\n"
-                  f"{_fmt(e_data.get('verified_total', 0))} всего",
+            value=f"сегодня **{_fmt(verified_today)}**\nза 7 дней **{_fmt(verified_week)}**",
             inline=True,
         )
         embed.add_field(
-            name="В проходке сегодня",
-            value=_span(voice_today) + (" 🎧" if live else ""),
+            name="В проходке",
+            value=(
+                f"сегодня **{_span(voice_today)}**{' 🎧' if live else ''}\n"
+                f"за 7 дней **{_span(voice_week)}**"
+            ),
             inline=True,
         )
-        embed.add_field(name="В проходке всего", value=_span(voice_total), inline=True)
         embed.add_field(name="С нами с", value=e_data.get("first_seen", "—"), inline=True)
         embed.set_footer(text=f"1 верификация = {_fmt(sc.coin_per_verify(guild_id))} {cur}")
         await interaction.response.send_message(embed=embed)

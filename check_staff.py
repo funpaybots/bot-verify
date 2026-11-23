@@ -82,6 +82,29 @@ check("stop adds time", 120 <= added <= 130 and e2["voice_total"] >= 120, str(ad
 check("live after stop", sc.voice_live(777, 2) == 0)
 check("double stop safe", sc.voice_stop(777, 2) == 0)
 
+# Статистика за сегодня и за неделю
+import datetime as _dt
+
+e2 = sc.get_entry(777, 2)
+yesterday = (_dt.date.today() - _dt.timedelta(days=1)).isoformat()
+e2["daily"][yesterday] = {"verified": 2, "voice": 300}
+
+v_today, s_today = sc.day_stat(777, 2, 1)
+v_week, s_week = sc.day_stat(777, 2, 7)
+check("day_stat today", v_today == 0 and 120 <= s_today <= 130, f"{v_today}/{s_today}")
+check("week sums yesterday", v_week == 2 and 420 <= s_week <= 440, f"{v_week}/{s_week}")
+
+old_day = (_dt.date.today() - _dt.timedelta(days=90)).isoformat()
+e2["daily"][old_day] = {"verified": 50, "voice": 5000}
+sc._bump_day(777, 2, "verified")
+check("old history pruned", old_day not in e2["daily"])
+check("week ignores old", sc.day_stat(777, 2, 7)[0] == 3, str(sc.day_stat(777, 2, 7)[0]))
+
+# Миграция записи старой схемы (без daily)
+sc._data().setdefault("888", {})["5"] = {"verified_today": 3, "voice_today": 60}
+sc.get_entry(888, 5)
+check("legacy migrated", sc.day_stat(888, 5, 1) == (3, 60), str(sc.day_stat(888, 5, 1)))
+
 # Повторный вход не сбрасывает таймер
 sc.voice_start(777, 2)
 started = sc._voice_since[(777, 2)]

@@ -107,6 +107,15 @@ def get_entry(guild_id: int, user_id: int) -> dict:
     e.setdefault("voice_day", today)
     e.setdefault("first_seen", today)
 
+    if "daily" not in e:
+        # Миграция со старой схемы: «сегодня» переезжает в историю по дням.
+        e["daily"] = {}
+        if e.get("verified_today") or e.get("voice_today"):
+            e["daily"][today] = {
+                "verified": int(e.get("verified_today", 0)),
+                "voice": int(e.get("voice_today", 0)),
+            }
+
     if e["day"] != today:
         e["day"] = today
         e["verified_today"] = 0
@@ -118,6 +127,36 @@ def get_entry(guild_id: int, user_id: int) -> dict:
     return e
 
 
+def _bump_day(guild_id: int, user_id: int, key: str, amount: int = 1) -> None:
+    """Плюс к счётчику за сегодня с чисткой старой истории."""
+    global _dirty
+    e = get_entry(guild_id, user_id)
+    daily = e.setdefault("daily", {})
+    today = _today()
+    day = daily.setdefault(today, {"verified": 0, "voice": 0})
+    day[key] = int(day.get(key, 0)) + int(amount)
+
+    cutoff = (datetime.date.today() - datetime.timedelta(days=60)).isoformat()
+    for old in [d for d in daily if d < cutoff]:
+        del daily[old]
+    _dirty = True
+
+
+def day_stat(guild_id: int, user_id: int, days: int = 1):
+    """Сумма за последние N дней (включая сегодня): (верификации, секунды в проходке)."""
+    e = get_entry(guild_id, user_id)
+    daily = e.get("daily", {})
+    today = datetime.date.today()
+    verified = 0
+    voice = 0
+    for i in range(max(1, days)):
+        key = (today - datetime.timedelta(days=i)).isoformat()
+        day = daily.get(key) or {}
+        verified += int(day.get("verified", 0))
+        voice += int(day.get("voice", 0))
+    return verified, voice
+
+
 def add_verify(guild_id: int, user_id: int):
     """Верификация: +монеты и +1 в счётчики. Возвращает (начислено, всего монет)."""
     e = get_entry(guild_id, user_id)
@@ -125,6 +164,7 @@ def add_verify(guild_id: int, user_id: int):
     e["verified_total"] = int(e.get("verified_total", 0)) + 1
     e["verified_today"] = int(e.get("verified_today", 0)) + 1
     e["coins"] = int(e.get("coins", 0)) + coins
+    _bump_day(guild_id, user_id, "verified")
     save_data(force=True)
     return coins, e["coins"]
 
@@ -155,6 +195,7 @@ def voice_stop(guild_id: int, user_id: int) -> int:
     e = get_entry(guild_id, user_id)
     e["voice_total"] = int(e.get("voice_total", 0)) + seconds
     e["voice_today"] = int(e.get("voice_today", 0)) + seconds
+    _bump_day(guild_id, user_id, "voice", seconds)
     _dirty = True
     return seconds
 
