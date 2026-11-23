@@ -73,10 +73,13 @@ async def main():
                 except Exception as e:
                     logger.warning("Не смог очистить глобальные команды: %s", e)
                 synced = await bot.tree.sync(guild=guild)
+                names = sorted(
+                    c.get("name", "?") if isinstance(c, dict) else getattr(c, "name", "?")
+                    for c in synced
+                )
                 logger.info(
                     "Синкнуто %d команд на гильдию %d: %s",
-                    len(synced), guild_id,
-                    ", ".join(sorted(c["name"] for c in synced)),
+                    len(synced), guild_id, ", ".join(names),
                 )
             else:
                 synced = await bot.tree.sync()
