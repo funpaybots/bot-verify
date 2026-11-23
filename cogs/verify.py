@@ -7,22 +7,13 @@ from discord import app_commands
 from discord.ext import commands
 
 from storage import load, save
+from cogs.staff_core import STAFF_ROLE_IDS, add_verify as add_verify_credit, top as staff_top
 
 SETTINGS_FILE = "settings.json"
 LOG_FILE = "verify_log.json"
 
 DEFAULT_MALE_ID   = 1573422846485594193  # ♂
 DEFAULT_FEMALE_ID = 1573422843574886453  # ♀
-
-STAFF_ROLE_IDS = [
-    1573422779376865280,  # Хелпер
-    1573422776919007424,  # Модератор
-    1573680792679489556,  # Старший модератор
-    1573422768421077063,  # Администратор
-    1573680796475195482,  # Главный администратор
-    1573422762205257763,  # Владелец
-    1573680800233426984,  # Владелица
-]
 
 
 def _is_staff(member: discord.Member) -> bool:
@@ -164,6 +155,9 @@ class VerifyView(discord.ui.View):
             }
             save(LOG_FILE, log)
 
+            # Лапки стаффу за верификацию
+            coins, coins_total = add_verify_credit(guild.id, interaction.user.id)
+
             result_embed = discord.Embed(
                 title=f"✅ Верифицирован как {symbol}",
                 description=f"{self.member.mention} верифицирован {interaction.user.mention}",
@@ -174,6 +168,9 @@ class VerifyView(discord.ui.View):
             result_embed.add_field(name="ID", value=str(self.member.id), inline=True)
             result_embed.add_field(name="Роль", value=role.mention, inline=True)
             result_embed.add_field(name="Хелпер", value=interaction.user.mention, inline=True)
+            result_embed.add_field(
+                name="Лапки", value=f"+{coins} (всего {coins_total})", inline=True
+            )
             await edit(result_embed)
 
             # Лог в канал с кнопкой изменить роль
@@ -464,6 +461,18 @@ class Verify(commands.Cog):
         embed.add_field(name="Всего", value=str(total),  inline=True)
         embed.add_field(name="♂",     value=str(male),   inline=True)
         embed.add_field(name="♀",     value=str(female), inline=True)
+
+        rows = staff_top(interaction.guild.id, 5)
+        if rows:
+            medals = ["🥇", "🥈", "🥉", "▫️", "▫️"]
+            embed.add_field(
+                name="Топ хелперов",
+                value="\n".join(
+                    f"{medals[i]} <@{uid}> — {info.get('verified_total', 0)} вериф."
+                    for i, (uid, info) in enumerate(rows)
+                ),
+                inline=False,
+            )
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
     @app_commands.command(name="post_team", description="Запостить состав команды в канал")

@@ -51,20 +51,37 @@ async def main():
 
     bot = commands.Bot(command_prefix="!", intents=intents)
     bot.guild_id = guild_id
+    synced_once = False
 
     @bot.event
     async def on_ready():
+        nonlocal synced_once
         logger.info("Залогинились как %s (id=%s)", bot.user, bot.user.id)
-        await bot.load_extension("cogs.verify")
-        logger.info("Cog verify загружен")
+        if synced_once:
+            return
+        synced_once = True
 
-        if guild_id:
-            guild = discord.Object(id=guild_id)
-            bot.tree.copy_global_to(guild=guild)
-            synced = await bot.tree.sync(guild=guild)
-            logger.info("Синкнуто %d команд на гильдию %d", len(synced), guild_id)
-        else:
-            synced = await bot.tree.sync()
-            logger.info("Синкнуто %d глобальных команд", len(synced))
+        try:
+            if guild_id:
+                guild = discord.Object(id=guild_id)
+                bot.tree.copy_global_to(guild=guild)
+                synced = await bot.tree.sync(guild=guild)
+                logger.info("Синкнуто %d команд на гильдию %d", len(synced), guild_id)
+            else:
+                synced = await bot.tree.sync()
+                logger.info("Синкнуто %d глобальных команд", len(synced))
+        except discord.Forbidden:
+            logger.error(
+                "Синк команд запрещён (Missing Access): проверь, что бот приглашён на гильдию %s "
+                "со scope bot+applications.commands.",
+                guild_id,
+            )
+        except Exception as e:
+            logger.exception("Не удалось синкнуть команды: %s", e)
+
+    # Коги (и persistent-вьюхи из их setup) грузим ДО подключения к гейтвею.
+    for ext in ("cogs.verify", "cogs.staff"):
+        await bot.load_extension(ext)
+        logger.info("Cog %s загружен", ext.split(".")[-1])
 
     await bot.start(token)
