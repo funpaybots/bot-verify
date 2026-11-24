@@ -208,7 +208,59 @@ sc.clear_dayoff(777, 4)
 check("no block without dayoff", verify_cog._dayoff_block(_FakeInteraction()) == "")
 
 verify_names = {c.name for c in verify_cog.Verify.__cog_app_commands__}
-check("verify commands intact", {"verify", "unverify", "verify_stats", "setup_verify", "post_map"} <= verify_names)
+check("verify commands intact", {"verify", "unverify", "verify_stats", "setup_verify", "post_map", "unmute"} <= verify_names)
+
+
+# ── Роль новичка и мут в проходке ─────────────────────────────────────────────
+
+class _UVRole:
+    def __init__(self, rid, name):
+        self.id = rid
+        self.name = name
+
+
+class _UVGuild:
+    def __init__(self, roles):
+        self.id = 777
+        self.roles = roles
+
+
+class _UVMember:
+    def __init__(self, uid, guild, roles, admin=False):
+        self.id = uid
+        self.guild = guild
+        self.roles = roles
+        self.bot = False
+        self.guild_permissions = FakePerms(admin)
+        self.kw = {}
+
+    async def edit(self, **kw):
+        self.kw = kw
+
+
+uv_role = _UVRole(900, "🔒 Не верифицирован")
+male_role = _UVRole(sc.STAFF_ROLE_IDS[0], "♂")
+guild_uv = _UVGuild([uv_role, male_role])
+
+novice = _UVMember(101, guild_uv, [uv_role])
+verified = _UVMember(102, guild_uv, [male_role])
+blank = _UVMember(103, guild_uv, [])
+
+check("unverified role found", verify_cog._find_unverified_role(guild_uv) is uv_role)
+check("novice needs mute", verify_cog._needs_passage_mute(novice))
+check("verified not muted", not verify_cog._needs_passage_mute(verified))
+guild_norole = _UVGuild([male_role])
+check("fallback mutes roleless", verify_cog._needs_passage_mute(_UVMember(105, guild_norole, [])))
+check("no role and no unverified role -> not muted", not verify_cog._needs_passage_mute(blank))
+check("staff not muted", not verify_cog._needs_passage_mute(_UVMember(104, guild_uv, [uv_role], admin=True)))
+check("bot not muted", not verify_cog._needs_passage_mute(blank) if blank.bot else True)
+
+import asyncio
+
+asyncio.run(verify_cog._mute_in_passage(novice))
+check("mute sets flag", (777, 101) in verify_cog._MUTED_BY_BOT and novice.kw.get("mute") is True)
+asyncio.run(verify_cog._unmute_guest(novice))
+check("unmute clears flag", (777, 101) not in verify_cog._MUTED_BY_BOT and novice.kw.get("mute") is False)
 
 # Поиск каналов для карты сервера
 class _FakeCh:

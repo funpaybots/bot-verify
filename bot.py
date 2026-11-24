@@ -49,6 +49,8 @@ async def main():
         guild_id = 1573386089467748482
 
     intents = discord.Intents.default()
+    # Нужен для on_member_join и выдачи роли новичка при входе
+    intents.members = True
 
     bot = commands.Bot(command_prefix="!", intents=intents)
     bot.guild_id = guild_id

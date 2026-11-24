@@ -14,6 +14,7 @@ from cogs.staff_core import (
     STAFF_ROLE_IDS,
     add_verify as add_verify_credit,
     dayoff_until_str,
+    is_passage as is_passage_channel,
     on_dayoff,
     staff_currency,
     top as staff_top,
@@ -57,6 +58,87 @@ def _get_ids(guild_id: int):
         int(cfg.get("role_female", DEFAULT_FEMALE_ID)),
         cfg.get("log_channel_id"),
     )
+
+
+# ── Неверифицированные и мут в проходке ───────────────────────────────────────
+
+UNVERIFIED_ROLE_NAME = "🔒 Не верифицирован"
+UNVERIFIED_NAME_HINTS = ("не верифицирован", "неверифицирован", "unverified", "анвереф")
+
+# Кого бот сам замутил: {(guild_id, user_id)} — чтобы снимать мут только за собой
+_MUTED_BY_BOT = set()
+
+
+def _unverified_role_id(guild_id: int) -> int:
+    return int(load(SETTINGS_FILE, {}).get(str(guild_id), {}).get("unverified_role_id", 0) or 0)
+
+
+def _find_unverified_role(guild: discord.Guild):
+    role_id = _unverified_role_id(guild.id)
+    if role_id:
+        role = guild.get_role(role_id)
+        if role is not None:
+            return role
+    for role in guild.roles:
+        name = role.name.lower()
+        if any(h in name for h in UNVERIFIED_NAME_HINTS):
+            return role
+    return None
+
+
+async def _ensure_unverified_role(guild: discord.Guild):
+    """Роль новичка. Нет — создаём и запоминаем в настройках."""
+    role = _find_unverified_role(guild)
+    if role is not None:
+        return role
+    try:
+        role = await guild.create_role(
+            name=UNVERIFIED_ROLE_NAME,
+            colour=discord.Colour.dark_gray(),
+            permissions=discord.Permissions.none(),
+            hoist=False,
+            mentionable=False,
+            reason="Роль новичка до верификации",
+        )
+    except (discord.Forbidden, discord.HTTPException):
+        return None
+    data = load(SETTINGS_FILE, {})
+    data.setdefault(str(guild.id), {})["unverified_role_id"] = role.id
+    save(SETTINGS_FILE, data)
+    return role
+
+
+def _has_unverified(member: discord.Member) -> bool:
+    role = _find_unverified_role(member.guild)
+    if role is not None:
+        return role in member.roles
+    male_id, female_id, _ = _get_ids(member.guild.id)
+    return not _already_verified(member, male_id, female_id)
+
+
+def _needs_passage_mute(member: discord.Member) -> bool:
+    """Новичкам в проходке закрываем микрофон. Стафф и боты — не трогаем."""
+    if member.bot or _is_staff(member):
+        return False
+    return _has_unverified(member)
+
+
+async def _mute_in_passage(member: discord.Member, reason: str = "Проходка: микрофон закрыт до верификации"):
+    try:
+        await member.edit(mute=True, reason=reason)
+    except (discord.Forbidden, discord.HTTPException):
+        return False
+    _MUTED_BY_BOT.add((member.guild.id, member.id))
+    return True
+
+
+async def _unmute_guest(member: discord.Member, reason: str = "Мут в проходке снят"):
+    try:
+        await member.edit(mute=False, reason=reason)
+    except (discord.Forbidden, discord.HTTPException):
+        return False
+    _MUTED_BY_BOT.discard((member.guild.id, member.id))
+    return True
 
 
 # ── Карта сервера ─────────────────────────────────────────────────────────────
@@ -246,6 +328,16 @@ class VerifyView(discord.ui.View):
                         content="Нет прав выдавать роль — проверь позицию роли бота.", embed=None, view=None
                     )
                 return
+
+            # Снимаем роль новичка и мут в проходке
+            uv_role = _find_unverified_role(guild)
+            if uv_role is not None and uv_role in self.member.roles:
+                try:
+                    await self.member.remove_roles(uv_role, reason="Верифицирован")
+                except (discord.Forbidden, discord.HTTPException):
+                    pass
+            if (guild.id, self.member.id) in _MUTED_BY_BOT:
+                await _unmute_guest(self.member, "Верифицирован")
 
             # Лог в файл
             log = load(LOG_FILE, {})
@@ -528,6 +620,54 @@ class VerifyPanelView(discord.ui.View):
 class Verify(commands.Cog):
     def __init__(self, bot: commands.Bot):
         self.bot = bot
+        self._ready_scan_done = False
+
+    @commands.Cog.listener()
+    async def on_ready(self):
+        # После рестарта догоняем тех, кто уже сидит в проходке
+        if self._ready_scan_done:
+            return
+        self._ready_scan_done = True
+        for guild in self.bot.guilds:
+            for channel in guild.voice_channels:
+                if not is_passage_channel(channel):
+                    continue
+                for member in channel.members:
+                    if _needs_passage_mute(member):
+                        await _mute_in_passage(member, "Проходка: мут после рестарта")
+
+    @commands.Cog.listener()
+    async def on_member_join(self, member: discord.Member):
+        if member.bot:
+            return
+        role = await _ensure_unverified_role(member.guild)
+        if role is None:
+            return
+        try:
+            await member.add_roles(role, reason="Новичок: до верификации")
+        except (discord.Forbidden, discord.HTTPException):
+            pass
+
+    @commands.Cog.listener()
+    async def on_voice_state_update(
+        self,
+        member: discord.Member,
+        before: discord.VoiceState,
+        after: discord.VoiceState,
+    ):
+        if member.bot:
+            return
+        was_in = before.channel is not None and is_passage_channel(before.channel)
+        now_in = after.channel is not None and is_passage_channel(after.channel)
+        key = (member.guild.id, member.id)
+
+        if now_in and not was_in:
+            if _needs_passage_mute(member):
+                await _mute_in_passage(member)
+        elif was_in and not now_in:
+            # Снимаем только свой мут: чужой не трогаем
+            if key in _MUTED_BY_BOT:
+                await _unmute_guest(member, "Вышел из проходки")
 
     @app_commands.command(name="verify", description="Верифицировать участника (только стафф)")
     @app_commands.describe(member="Участник которого верифицируем")
@@ -574,8 +714,41 @@ class Verify(commands.Cog):
             return
 
         await member.remove_roles(*roles_to_remove, reason=f"Снятие верификации от {interaction.user}")
+
+        # Возвращаем роль новичка и, если сидит в проходке, снова закрываем микрофон
+        uv_role = await _ensure_unverified_role(interaction.guild)
+        if uv_role is not None:
+            try:
+                await member.add_roles(uv_role, reason="Снятие верификации")
+            except (discord.Forbidden, discord.HTTPException):
+                pass
+        if member.voice and is_passage_channel(member.voice.channel) and _needs_passage_mute(member):
+            await _mute_in_passage(member, "Проходка: верификация снята")
+
         await interaction.response.send_message(
             f"✅ Верификация снята с {member.mention}.", ephemeral=True
+        )
+
+    @app_commands.command(name="unmute", description="Снять мут с гостя в проходке (только стафф)")
+    @app_commands.describe(member="Кого размутить")
+    async def unmute(self, interaction: discord.Interaction, member: discord.Member):
+        if not _is_staff(interaction.user):
+            await interaction.response.send_message("Нет прав.", ephemeral=True)
+            return
+        if member.bot:
+            await interaction.response.send_message("Ботам мут не нужен.", ephemeral=True)
+            return
+
+        ok = await _unmute_guest(member, f"Размутил {interaction.user}")
+        if not ok:
+            await interaction.response.send_message(
+                "Не смог снять мут: проверь право «Заглушать участников» и позицию роли бота.",
+                ephemeral=True,
+            )
+            return
+        await interaction.response.send_message(
+            f"🔊 {member.mention} снова может говорить. Не забывай: он всё ещё ждёт верификацию.",
+            ephemeral=True,
         )
 
     @app_commands.command(name="verify_stats", description="Статистика верификаций")
@@ -776,6 +949,7 @@ class Verify(commands.Cog):
         panel_channel="Канал стаффа где ставится панель с дропдауном",
         role_male="Роль ♂",
         role_female="Роль ♀",
+        unverified_role="Роль новичка до верификации (по умолчанию создам сам)",
     )
     @app_commands.checks.has_permissions(administrator=True)
     async def setup_verify(
@@ -785,6 +959,7 @@ class Verify(commands.Cog):
         panel_channel: discord.TextChannel = None,
         role_male: discord.Role = None,
         role_female: discord.Role = None,
+        unverified_role: discord.Role = None,
     ):
         data = load(SETTINGS_FILE, {})
         cfg = data.setdefault(str(interaction.guild.id), {})
@@ -793,7 +968,15 @@ class Verify(commands.Cog):
             cfg["role_male"] = role_male.id
         if role_female:
             cfg["role_female"] = role_female.id
+        if unverified_role:
+            cfg["unverified_role_id"] = unverified_role.id
         save(SETTINGS_FILE, data)
+
+        if unverified_role is None:
+            # Роль новичка создаём сразу, чтобы гости получали её с первой секунды
+            made = await _ensure_unverified_role(interaction.guild)
+            if made is not None:
+                unverified_role = made
 
         if panel_channel:
             panel_embed = discord.Embed(
@@ -811,6 +994,8 @@ class Verify(commands.Cog):
             embed.add_field(name="♂", value=role_male.mention, inline=True)
         if role_female:
             embed.add_field(name="♀", value=role_female.mention, inline=True)
+        if unverified_role:
+            embed.add_field(name="Новичок", value=unverified_role.mention, inline=True)
         await interaction.response.send_message(embed=embed, ephemeral=True)
 
 
