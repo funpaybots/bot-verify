@@ -8,6 +8,9 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
+import backup
+from backup import backup_loop
+
 logger = logging.getLogger(__name__)
 
 
@@ -55,11 +58,20 @@ async def main():
     bot = commands.Bot(command_prefix="!", intents=intents)
     bot.guild_id = guild_id
     synced_once = False
+    backup_started = False
 
     @bot.event
     async def on_ready():
-        nonlocal synced_once
+        nonlocal synced_once, backup_started
         logger.info("Залогинились как %s (id=%s)", bot.user, bot.user.id)
+        if not backup_started:
+            backup_started = True
+            bot.loop.create_task(backup_loop(bot))
+            logger.info(
+                "Авто-бэкап data/ запущен: каждые %s ч., храним %s",
+                backup.INTERVAL_HOURS,
+                backup.KEEP,
+            )
         if synced_once:
             return
         synced_once = True
