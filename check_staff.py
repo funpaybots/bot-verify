@@ -302,6 +302,60 @@ if "стафф" not in verify_cog.Verify.__cog_app_commands__[0].description.low
     pass
 check("cyrillic ok", "Статистика стаффа" in staff_cog.Staff.staff_stats.description)
 
+# ── Подсказка хелперу при верификации ────────────────────────────────────────
+
+class _FakeAvatar:
+    def __init__(self, default):
+        self._default = default
+        self.url = "https://example.com/avatar.png"
+
+    def is_default(self):
+        return self._default
+
+
+class _FakeHintMember:
+    def __init__(self, days_old, name="котик", default_avatar=False):
+        self.id = 555
+        self.mention = "<@555>"
+        self.display_name = name
+        self.created_at = _dt.datetime.now(_dt.timezone.utc) - _dt.timedelta(days=days_old)
+        self.display_avatar = _FakeAvatar(default_avatar)
+
+
+now = _dt.datetime.now(_dt.timezone.utc)
+
+verdict, reasons = verify_cog._risk_hint(_FakeHintMember(400, "мурзик"))
+check("hint ok for old clean account", verdict == verify_cog.HINT_OK, verdict)
+
+verdict, _ = verify_cog._risk_hint(_FakeHintMember(10, "мурзик"))
+check("hint ok for 10-day account alone", verdict == verify_cog.HINT_OK, verdict)
+
+verdict, _ = verify_cog._risk_hint(_FakeHintMember(10, "мурзик", default_avatar=True))
+check("hint warns for 10-day + no avatar", verdict == verify_cog.HINT_WARN, verdict)
+
+verdict, reasons = verify_cog._risk_hint(
+    _FakeHintMember(1, "12345678", default_avatar=True)
+)
+check("hint risk for fresh no-avatar digits", verdict == verify_cog.HINT_RISK, verdict)
+check("hint lists reasons", len(reasons) >= 3, str(reasons))
+
+verdict, reasons = verify_cog._risk_hint(_FakeHintMember(400, "discord_support"))
+check("hint catches suspicious nick", verdict == verify_cog.HINT_WARN, verdict)
+check("hint names the word", any("discord" in r for r in reasons), str(reasons))
+
+check("age str minutes", verify_cog._age_str(_dt.timedelta(minutes=12)) == "12 мин.")
+check("age str hours", verify_cog._age_str(_dt.timedelta(hours=5)) == "5 ч.")
+check("age str days", verify_cog._age_str(_dt.timedelta(days=5)) == "5 дн.")
+check("age str months", verify_cog._age_str(_dt.timedelta(days=65)) == "2 мес.")
+check("age str years", verify_cog._age_str(_dt.timedelta(days=800)) == "2 г. 2 мес.")
+check("age str whole years", verify_cog._age_str(_dt.timedelta(days=730)) == "2 г.")
+
+# В карточке верификации подсказка реально появляется
+embed = verify_cog._make_embed(_FakeHintMember(1, "12345678", default_avatar=True), "🔇 · не в войсе")
+field_names = [f.name for f in embed.fields]
+check("hint field in card", "🧭 Подсказка" in field_names, str(field_names))
+check("account age field in card", "🗓 Аккаунт" in field_names, str(field_names))
+
 print(f"\nВсего провалов: {len(fails)}")
 if fails:
     print("Провалились: " + ", ".join(fails))

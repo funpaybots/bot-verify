@@ -196,6 +196,81 @@ def _norm_name(s: str) -> str:
     return re.sub(r"[^a-z0-9а-яё]", "", s.lower())
 
 
+# ── Подсказка хелперу: стоит ли впускать ─────────────────────────────────────
+# Это не запрет, а совет. Хелпер всё равно решает сам.
+
+HINT_OK = "✅ Выглядит обычно — можно впускать"
+HINT_WARN = "⚠️ Есть вопросы — поговори в проходке"
+HINT_RISK = "🛑 Сильно подозрительно — проверь внимательно"
+
+# Слова, которые часто лепят в ник фейковые «админы» и разводы.
+SUSPICIOUS_WORDS = (
+    "discord", "admin", "moder", "support", "nitro", "free", "steam", "gift",
+)
+
+
+def _age_str(delta: datetime.timedelta) -> str:
+    """Человеческий возраст: 12 мин. / 3 ч. / 5 дн. / 2 мес. / 1 г. 3 мес."""
+    seconds = max(0, int(delta.total_seconds()))
+    if seconds < 3600:
+        return f"{max(1, seconds // 60)} мин."
+    if seconds < 86400:
+        return f"{seconds // 3600} ч."
+    days = seconds // 86400
+    if days < 30:
+        return f"{days} дн."
+    months = days // 30
+    if months < 12:
+        return f"{months} мес."
+    years, rest = divmod(months, 12)
+    return f"{years} г. {rest} мес." if rest else f"{years} г."
+
+
+def _risk_hint(member, now: datetime.datetime | None = None):
+    """(вердикт, причины) — эвристика для хелпера, без Discord-зависимостей."""
+    now = now or datetime.datetime.now(datetime.timezone.utc)
+    reasons = []
+    score = 0
+
+    created = getattr(member, "created_at", None)
+    if created:
+        days = max(0, (now - created).days)
+        if days < 3:
+            score += 2
+            reasons.append(f"аккаунт совсем новый ({days} дн.)")
+        elif days < 14:
+            score += 1
+            reasons.append(f"аккаунт младше двух недель ({days} дн.)")
+
+    avatar = getattr(member, "display_avatar", None)
+    try:
+        no_avatar = bool(avatar is not None and avatar.is_default())
+    except Exception:  # noqa: BLE001 - странный объект аватара не должен ронять карточку
+        no_avatar = False
+    if no_avatar:
+        score += 1
+        reasons.append("нет аватарки")
+
+    name = str(getattr(member, "display_name", "") or "").lower()
+    if name.isdigit():
+        score += 1
+        reasons.append("ник из одних цифр")
+    word = next((w for w in SUSPICIOUS_WORDS if w in name), "")
+    if word:
+        score += 2
+        reasons.append(f"в нике «{word}»")
+
+    if score >= 4:
+        verdict = HINT_RISK
+    elif score >= 2:
+        verdict = HINT_WARN
+    else:
+        verdict = HINT_OK
+        if not reasons:
+            reasons.append("красных флагов не видно")
+    return verdict, reasons
+
+
 def _find_channel(guild: discord.Guild, pattern: str, taken: set):
     """Найти канал по примерному имени: точное → вхождение → похожесть."""
     target = _norm_name(pattern)
@@ -228,6 +303,21 @@ def _make_embed(member: discord.Member, voice_name: str) -> discord.Embed:
     embed.add_field(name="🐾 Участник", value=f"{member.mention}", inline=False)
     embed.add_field(name="ID", value=str(member.id), inline=True)
     embed.add_field(name="Проходка", value=voice_name, inline=True)
+
+    created = getattr(member, "created_at", None)
+    if created:
+        embed.add_field(
+            name="🗓 Аккаунт",
+            value=_age_str(datetime.datetime.now(datetime.timezone.utc) - created),
+            inline=True,
+        )
+
+    verdict, reasons = _risk_hint(member)
+    embed.add_field(
+        name="🧭 Подсказка",
+        value=verdict + "\n" + "\n".join(f"• {r}" for r in reasons[:4]),
+        inline=False,
+    )
     return embed
 
 
