@@ -318,6 +318,8 @@ class _FakeHintMember:
         self.id = 555
         self.mention = "<@555>"
         self.display_name = name
+        self.name = name
+        self.global_name = None
         self.created_at = _dt.datetime.now(_dt.timezone.utc) - _dt.timedelta(days=days_old)
         self.display_avatar = _FakeAvatar(default_avatar)
 
@@ -343,6 +345,21 @@ verdict, reasons = verify_cog._risk_hint(_FakeHintMember(400, "discord_support")
 check("hint catches suspicious nick", verdict == verify_cog.HINT_WARN, verdict)
 check("hint names the word", any("discord" in r for r in reasons), str(reasons))
 
+# Правила Discord: impersonation, скам-слова, ссылки
+verdict, reasons = verify_cog._risk_hint(_FakeHintMember(400, "free_nitro"))
+check("hint catches scam words", verdict == verify_cog.HINT_WARN, verdict)
+check("hint names scam", any("nitro" in r for r in reasons), str(reasons))
+
+verdict, reasons = verify_cog._risk_hint(_FakeHintMember(400, "discord.gift/abc"))
+check("hint risk for link in nick", verdict == verify_cog.HINT_RISK, verdict)
+check("hint names link", any("ссылк" in r for r in reasons), str(reasons))
+
+verdict, _ = verify_cog._risk_hint(_FakeHintMember(400, "steam_gamer"))
+check("normal gamer nick stays ok", verdict == verify_cog.HINT_OK, verdict)
+
+check("checklist mentions 13+", "13+" in verify_cog.HINT_CHECKLIST)
+check("checklist mentions impersonation", "стафф" in verify_cog.HINT_CHECKLIST)
+
 check("age str minutes", verify_cog._age_str(_dt.timedelta(minutes=12)) == "12 мин.")
 check("age str hours", verify_cog._age_str(_dt.timedelta(hours=5)) == "5 ч.")
 check("age str days", verify_cog._age_str(_dt.timedelta(days=5)) == "5 дн.")
@@ -353,7 +370,7 @@ check("age str whole years", verify_cog._age_str(_dt.timedelta(days=730)) == "2 
 # В карточке верификации подсказка реально появляется
 embed = verify_cog._make_embed(_FakeHintMember(1, "12345678", default_avatar=True), "🔇 · не в войсе")
 field_names = [f.name for f in embed.fields]
-check("hint field in card", "🧭 Подсказка" in field_names, str(field_names))
+check("hint field in card", "🧭 Подсказка по правилам Discord" in field_names, str(field_names))
 check("account age field in card", "🗓 Аккаунт" in field_names, str(field_names))
 check("build in card footer", "сборка" in (embed.footer.text or ""), str(embed.footer.text))
 

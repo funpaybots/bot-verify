@@ -198,16 +198,32 @@ def _norm_name(s: str) -> str:
 
 
 # ── Подсказка хелперу: стоит ли впускать ─────────────────────────────────────
-# Это не запрет, а совет. Хелпер всё равно решает сам.
+# Совет, а не запрет: последнее слово за хелпером. Опираемся на то, что
+# реально видно через API, и на правила Discord:
+#   • аккаунт слишком свежий — типичный обход бана или спам-волна;
+#   • ник выдаёт себя за Discord/стафф — impersonation;
+#   • ник рекламирует нитро/подарки/промокоды — скам;
+#   • ссылка в нике — почти всегда развод.
+# Возраст 13+ и содержимое аватарки через API не проверить — это на хелпере.
 
-HINT_OK = "✅ Выглядит обычно — можно впускать"
+HINT_OK = "✅ Красных флагов не видно — можно впускать"
 HINT_WARN = "⚠️ Есть вопросы — поговори в проходке"
-HINT_RISK = "🛑 Сильно подозрительно — проверь внимательно"
+HINT_RISK = "🛑 Похоже на нарушение правил — проверь внимательно"
 
-# Слова, которые часто лепят в ник фейковые «админы» и разводы.
-SUSPICIOUS_WORDS = (
-    "discord", "admin", "moder", "support", "nitro", "free", "steam", "gift",
+HINT_CHECKLIST = "13+, не выдаёт себя за Discord/стафф, без скам-ссылок и NSFW."
+
+# Выдача себя за Discord/стафф — нарушение ToS (impersonation).
+IMPERSONATION_WORDS = (
+    "discord", "дискорд", "support", "moder", "admin", "админ", "staff",
+    "official", "официальн", "верификац",
 )
+# Скам-реклама в нике: нитро, подарки, промокоды.
+SCAM_WORDS = (
+    "nitro", "нитро", "free", "бесплат", "gift", "подар", "promo",
+    "промокод", "airdrop", "giveaway", "розыгрыш",
+)
+# Ссылки в нике — почти всегда скам.
+LINK_MARKERS = ("http", "www.", "discord.gg", "discord.gift", "t.me", ".ru/", ".com/", ".net/")
 
 
 def _age_str(delta: datetime.timedelta) -> str:
@@ -228,7 +244,7 @@ def _age_str(delta: datetime.timedelta) -> str:
 
 
 def _risk_hint(member, now: datetime.datetime | None = None):
-    """(вердикт, причины) — эвристика для хелпера, без Discord-зависимостей."""
+    """(вердикт, причины) — подсказка по правилам Discord, без Discord-зависимостей."""
     now = now or datetime.datetime.now(datetime.timezone.utc)
     reasons = []
     score = 0
@@ -238,7 +254,7 @@ def _risk_hint(member, now: datetime.datetime | None = None):
         days = max(0, (now - created).days)
         if days < 3:
             score += 2
-            reasons.append(f"аккаунт совсем новый ({days} дн.)")
+            reasons.append(f"аккаунт совсем новый ({days} дн.) — возможен обход бана")
         elif days < 14:
             score += 1
             reasons.append(f"аккаунт младше двух недель ({days} дн.)")
@@ -252,14 +268,32 @@ def _risk_hint(member, now: datetime.datetime | None = None):
         score += 1
         reasons.append("нет аватарки")
 
-    name = str(getattr(member, "display_name", "") or "").lower()
-    if name.isdigit():
+    # Смотрим и ник на сервере, и username: скам часто прячется в одном из них.
+    names = []
+    for attr in ("display_name", "name", "global_name"):
+        value = str(getattr(member, attr, "") or "").strip().lower()
+        if value and value not in names:
+            names.append(value)
+    joined = " ".join(names)
+
+    if any(n.isdigit() for n in names):
         score += 1
         reasons.append("ник из одних цифр")
-    word = next((w for w in SUSPICIOUS_WORDS if w in name), "")
-    if word:
+
+    impersonation = next((w for w in IMPERSONATION_WORDS if w in joined), "")
+    if impersonation:
         score += 2
-        reasons.append(f"в нике «{word}»")
+        reasons.append(f"ник косит под Discord/стафф: «{impersonation}»")
+
+    scam = next((w for w in SCAM_WORDS if w in joined), "")
+    if scam:
+        score += 2
+        reasons.append(f"скам-слово в нике: «{scam}»")
+
+    link = next((m for m in LINK_MARKERS if m in joined), "")
+    if link:
+        score += 4
+        reasons.append(f"ссылка в нике: «{link}»")
 
     if score >= 4:
         verdict = HINT_RISK
@@ -314,11 +348,9 @@ def _make_embed(member: discord.Member, voice_name: str) -> discord.Embed:
         )
 
     verdict, reasons = _risk_hint(member)
-    embed.add_field(
-        name="🧭 Подсказка",
-        value=verdict + "\n" + "\n".join(f"• {r}" for r in reasons[:4]),
-        inline=False,
-    )
+    hint = verdict + "\n" + "\n".join(f"• {r}" for r in reasons[:4])
+    hint += f"\n\n_Сверить: {HINT_CHECKLIST}_"
+    embed.add_field(name="🧭 Подсказка по правилам Discord", value=hint, inline=False)
     embed.set_footer(text=f"сборка {BUILD}")
     return embed
 
