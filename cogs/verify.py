@@ -10,6 +10,7 @@ from discord import app_commands
 from discord.ext import commands
 
 from storage import load, save
+from version import BUILD
 from cogs.staff_core import (
     STAFF_ROLE_IDS,
     add_verify as add_verify_credit,
@@ -318,6 +319,7 @@ def _make_embed(member: discord.Member, voice_name: str) -> discord.Embed:
         value=verdict + "\n" + "\n".join(f"• {r}" for r in reasons[:4]),
         inline=False,
     )
+    embed.set_footer(text=f"сборка {BUILD}")
     return embed
 
 

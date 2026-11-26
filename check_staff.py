@@ -355,6 +355,7 @@ embed = verify_cog._make_embed(_FakeHintMember(1, "12345678", default_avatar=Tru
 field_names = [f.name for f in embed.fields]
 check("hint field in card", "🧭 Подсказка" in field_names, str(field_names))
 check("account age field in card", "🗓 Аккаунт" in field_names, str(field_names))
+check("build in card footer", "сборка" in (embed.footer.text or ""), str(embed.footer.text))
 
 print(f"\nВсего провалов: {len(fails)}")
 if fails:

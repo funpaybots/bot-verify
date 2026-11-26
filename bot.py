@@ -10,6 +10,7 @@ from discord.ext import commands
 
 import backup
 from backup import backup_loop
+from version import BUILD
 
 logger = logging.getLogger(__name__)
 
@@ -63,7 +64,7 @@ async def main():
     @bot.event
     async def on_ready():
         nonlocal synced_once, backup_started
-        logger.info("Залогинились как %s (id=%s)", bot.user, bot.user.id)
+        logger.info("Залогинились как %s (id=%s) · сборка %s", bot.user, bot.user.id, BUILD)
         if not backup_started:
             backup_started = True
             bot.loop.create_task(backup_loop(bot))
