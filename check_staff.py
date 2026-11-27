@@ -219,10 +219,31 @@ class _UVRole:
         self.name = name
 
 
+class _UVOverwrite:
+    def __init__(self, speak=None):
+        self.speak = speak
+
+
+class _UVChannel:
+    def __init__(self, cid, name):
+        self.id = cid
+        self.name = name
+        self.perms = {}
+        self.calls = 0
+
+    def overwrites_for(self, member):
+        return self.perms.setdefault(member.id, _UVOverwrite())
+
+    async def set_permissions(self, member, overwrite=None, reason=None):
+        self.perms[member.id] = overwrite
+        self.calls += 1
+
+
 class _UVGuild:
-    def __init__(self, roles):
+    def __init__(self, roles, voice_channels=None):
         self.id = 777
         self.roles = roles
+        self.voice_channels = voice_channels or []
 
 
 class _UVMember:
@@ -233,6 +254,7 @@ class _UVMember:
         self.bot = False
         self.guild_permissions = FakePerms(admin)
         self.kw = {}
+        self.voice = None
 
     async def edit(self, **kw):
         self.kw = kw
@@ -240,7 +262,10 @@ class _UVMember:
 
 uv_role = _UVRole(900, "🔒 Не верифицирован")
 male_role = _UVRole(sc.STAFF_ROLE_IDS[0], "♂")
-guild_uv = _UVGuild([uv_role, male_role])
+passage_one = _UVChannel(1001, "🍑 · Проходка")
+passage_two = _UVChannel(1002, "🍑 · Проходка 2")
+lounge = _UVChannel(1003, "общий-войс")
+guild_uv = _UVGuild([uv_role, male_role], [passage_one, passage_two, lounge])
 
 novice = _UVMember(101, guild_uv, [uv_role])
 verified = _UVMember(102, guild_uv, [male_role])
@@ -258,9 +283,23 @@ check("bot not muted", not verify_cog._needs_passage_mute(blank) if blank.bot el
 import asyncio
 
 asyncio.run(verify_cog._mute_in_passage(novice))
-check("mute sets flag", (777, 101) in verify_cog._MUTED_BY_BOT and novice.kw.get("mute") is True)
+check("mute sets flag", (777, 101) in verify_cog._MUTED_BY_BOT)
+check(
+    "mute closes speak in passages",
+    passage_one.perms.get(101) is not None
+    and passage_one.perms[101].speak is False
+    and passage_two.perms.get(101) is not None
+    and passage_two.perms[101].speak is False,
+)
+check("mute leaves other voice alone", 101 not in lounge.perms)
+check("mute is not global", novice.kw == {}, str(novice.kw))
+
 asyncio.run(verify_cog._unmute_guest(novice))
-check("unmute clears flag", (777, 101) not in verify_cog._MUTED_BY_BOT and novice.kw.get("mute") is False)
+check("unmute clears flag", (777, 101) not in verify_cog._MUTED_BY_BOT)
+check(
+    "unmute opens speak in passages",
+    passage_one.perms[101].speak is None and passage_two.perms[101].speak is None,
+)
 
 # Поиск каналов для карты сервера
 class _FakeCh:

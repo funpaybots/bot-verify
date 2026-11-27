@@ -124,22 +124,52 @@ def _needs_passage_mute(member: discord.Member) -> bool:
     return _has_unverified(member)
 
 
+def _passage_voice_channels(guild):
+    """Все войсы-проходки сервера."""
+    return [ch for ch in getattr(guild, "voice_channels", []) if is_passage_channel(ch)]
+
+
+async def _set_passage_speak(member: discord.Member, allow: bool, reason: str) -> bool:
+    """Закрывает (allow=False) или открывает микрофон только в проходках.
+
+    Права остальных войсов не трогаем: человек сидит в проходке — молчит,
+    перешёл в обычный войс — говорит как все. True, если хоть один канал обработан.
+    """
+    target = None if allow else False
+    applied = False
+    for channel in _passage_voice_channels(member.guild):
+        try:
+            overwrite = channel.overwrites_for(member)
+            if overwrite.speak != target:
+                overwrite.speak = target
+                await channel.set_permissions(member, overwrite=overwrite, reason=reason)
+            applied = True
+        except (discord.Forbidden, discord.HTTPException):
+            continue
+    return applied
+
+
 async def _mute_in_passage(member: discord.Member, reason: str = "Проходка: микрофон закрыт до верификации"):
-    try:
-        await member.edit(mute=True, reason=reason)
-    except (discord.Forbidden, discord.HTTPException):
+    if not await _set_passage_speak(member, allow=False, reason=reason):
         return False
     _MUTED_BY_BOT.add((member.guild.id, member.id))
     return True
 
 
 async def _unmute_guest(member: discord.Member, reason: str = "Мут в проходке снят"):
-    try:
-        await member.edit(mute=False, reason=reason)
-    except (discord.Forbidden, discord.HTTPException):
-        return False
-    _MUTED_BY_BOT.discard((member.guild.id, member.id))
-    return True
+    key = (member.guild.id, member.id)
+    applied = await _set_passage_speak(member, allow=True, reason=reason)
+    # Совместимость: если человека успели глобально замутить старой версией — снимаем только за собой
+    if key in _MUTED_BY_BOT:
+        voice = getattr(member, "voice", None)
+        if voice is not None and getattr(voice, "mute", False):
+            try:
+                await member.edit(mute=False, reason=reason)
+                applied = True
+            except (discord.Forbidden, discord.HTTPException):
+                pass
+    _MUTED_BY_BOT.discard(key)
+    return applied
 
 
 # ── Карта сервера ─────────────────────────────────────────────────────────────
@@ -866,7 +896,7 @@ class Verify(commands.Cog):
         ok = await _unmute_guest(member, f"Размутил {interaction.user}")
         if not ok:
             await interaction.response.send_message(
-                "Не смог снять мут: проверь право «Заглушать участников» и позицию роли бота.",
+                "Не смог снять мут: проверь право «Управление каналами» и позицию роли бота.",
                 ephemeral=True,
             )
             return
