@@ -182,13 +182,17 @@ async def _clear_global_mute(
 
 
 async def _clear_server_mutes(guild, reason: str = "Чистка старых серверных мьютов") -> int:
-    """Снимает серверные мьюты со всех, кто сейчас в войсах (стафф и ботов не трогаем)."""
+    """Снимает серверные мьюты со всех, кто сейчас в войсах.
+
+    Стафф и админов не пропускаем: политика бота — серверных мьютов нет вообще,
+    микрофон закрывает только роль новичка и только в проходке.
+    """
     cleared = 0
     for state in list(getattr(guild, "voice_states", {}).values()):
         if not getattr(state, "mute", False):
             continue
         member = getattr(state, "member", None)
-        if member is None or member.bot or _is_staff(member):
+        if member is None or member.bot:
             continue
         if await _clear_global_mute(member, reason):
             cleared += 1
@@ -884,9 +888,51 @@ class Verify(commands.Cog):
         # на человеке — всегда хвост старых сборок: снимаем, не спрашивая.
         if not getattr(after, "mute", False):
             return
-        if _is_staff(member):
-            return
         await _clear_global_mute(member, "Снят серверный мьют: мут только по роли в проходке")
+
+    @commands.Cog.listener()
+    async def on_member_update(self, before: discord.Member, after: discord.Member):
+        if after.bot or before.roles == after.roles:
+            return
+        voice = getattr(after, "voice", None)
+        if voice is not None and getattr(voice, "mute", False):
+            await _clear_global_mute(
+                after, "Снят серверный мьют после смены ролей: мут только по роли в проходке"
+            )
+
+    @app_commands.command(name="voice_diag", description="Почему человек не может говорить (только стафф)")
+    @app_commands.describe(member="Кого проверяем")
+    async def voice_diag(self, interaction: discord.Interaction, member: discord.Member):
+        if not _is_staff(interaction.user):
+            await interaction.response.send_message("Нет прав.", ephemeral=True)
+            return
+
+        guild = interaction.guild
+        voice = getattr(member, "voice", None)
+        uv_role = _find_unverified_role(guild)
+        lines = [
+            f"серверный мьют: **{'да' if voice and voice.mute else 'нет'}**",
+            f"сам себя заглушил: **{'да' if voice and voice.self_mute else 'нет'}**",
+            f"наушники выключены: **{'да' if voice and voice.deaf else 'нет'}**",
+            f"роль новичка: **{'есть' if uv_role is not None and uv_role in member.roles else 'нет'}**",
+        ]
+        channel = voice.channel if voice else None
+        if channel is not None:
+            perms = channel.permissions_for(member)
+            lines.append(f"канал: **#{channel.name}**")
+            lines.append(f"право говорить здесь: **{'да' if perms.speak else 'нет'}**")
+        else:
+            lines.append("в войсе: **нет**")
+
+        embed = discord.Embed(
+            title="🔎 Диагностика микрофона",
+            description="\n".join(lines),
+            color=discord.Color.from_str("#a9c9ff"),
+        )
+        roles = [r.mention for r in member.roles if r != guild.default_role]
+        embed.add_field(name="Роли", value=", ".join(roles)[:1000] or "нет", inline=False)
+        embed.set_footer(text=f"сборка {BUILD}")
+        await interaction.response.send_message(embed=embed, ephemeral=True)
 
     @app_commands.command(name="verify", description="Верифицировать участника (только стафф)")
     @app_commands.describe(member="Участник которого верифицируем")

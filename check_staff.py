@@ -209,7 +209,7 @@ sc.clear_dayoff(777, 4)
 check("no block without dayoff", verify_cog._dayoff_block(_FakeInteraction()) == "")
 
 verify_names = {c.name for c in verify_cog.Verify.__cog_app_commands__}
-check("verify commands intact", {"verify", "unverify", "verify_stats", "setup_verify", "post_map", "unmute", "unmute_all"} <= verify_names)
+check("verify commands intact", {"verify", "unverify", "verify_stats", "setup_verify", "post_map", "unmute", "unmute_all", "voice_diag"} <= verify_names)
 
 
 # ── Роль новичка и мут в проходке ─────────────────────────────────────────────
@@ -340,8 +340,11 @@ guild_uv.voice_states = {
     m.id: _UVState(m, m.voice.mute) for m in (muted_user, muted_admin, bot_member, quiet)
 }
 count = asyncio.run(verify_cog._clear_server_mutes(guild_uv))
-check("cleanup unmutes regular members", count == 1 and muted_user.kw.get("mute") is False, str(count))
-check("cleanup skips staff", muted_admin.kw == {}, str(muted_admin.kw))
+check(
+    "cleanup unmutes regular members and staff",
+    count == 2 and muted_user.kw.get("mute") is False and muted_admin.kw.get("mute") is False,
+    str(count),
+)
 check("cleanup skips bots", bot_member.kw == {}, str(bot_member.kw))
 check("cleanup skips non-muted", quiet.kw == {}, str(quiet.kw))
 
