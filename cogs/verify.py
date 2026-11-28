@@ -181,6 +181,12 @@ async def _clear_global_mute(
         return False
 
 
+def _can_mute_members(guild) -> bool:
+    """Есть ли у бота право «Заглушать участников» — без него мьют не снять."""
+    perms = getattr(getattr(guild, "me", None), "guild_permissions", None)
+    return bool(perms is not None and perms.mute_members)
+
+
 async def _clear_server_mutes(guild, reason: str = "Чистка старых серверных мьютов") -> int:
     """Снимает серверные мьюты со всех, кто сейчас в войсах.
 
@@ -220,6 +226,11 @@ async def _unmute_guest(member: discord.Member, reason: str = "Мут в про�
             continue
     if await _clear_global_mute(member, reason):
         removed.append("серверный мьют")
+    elif getattr(getattr(member, "voice", None), "mute", False):
+        removed.append(
+            "НЕ СНЯТ серверный мьют: у бота нет права «Заглушать участников» "
+            "(или его роль ниже роли человека)"
+        )
     return removed
 
 
@@ -916,6 +927,9 @@ class Verify(commands.Cog):
             f"наушники выключены: **{'да' if voice and voice.deaf else 'нет'}**",
             f"роль новичка: **{'есть' if uv_role is not None and uv_role in member.roles else 'нет'}**",
         ]
+        can_mute = _can_mute_members(guild)
+        lines.append(f"бот может снимать мьют: **{'да' if can_mute else 'нет — нет права «Заглушать участников»'}**")
+
         channel = voice.channel if voice else None
         if channel is not None:
             perms = channel.permissions_for(member)
