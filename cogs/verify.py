@@ -3,6 +3,7 @@
 
 import datetime
 import difflib
+import logging
 import re
 
 import discord
@@ -23,6 +24,8 @@ from cogs.staff_core import (
 
 SETTINGS_FILE = "settings.json"
 LOG_FILE = "verify_log.json"
+
+logger = logging.getLogger("verify")
 
 DEFAULT_MALE_ID   = 1573422846485594193  # ♂
 DEFAULT_FEMALE_ID = 1573422843574886453  # ♀
@@ -61,34 +64,14 @@ def _get_ids(guild_id: int):
     )
 
 
-# ── Неверифицированные и мут в проходке ───────────────────────────────────────
+# ── Неверифицированные и мут в проходке ──────────────────────────────────────
 
 UNVERIFIED_ROLE_NAME = "🔒 Не верифицирован"
 UNVERIFIED_NAME_HINTS = ("не верифицирован", "неверифицирован", "unverified", "анвереф")
 
-# Кого бот сам замутил: {(guild_id, user_id)} — чтобы снимать мут только за собой.
-# Храним на диске: после рестарта память не должна теряться, иначе старые
-# глобальные мьюты снять уже нечем.
-MUTED_FILE = "muted.json"
-
-
-def _load_muted() -> set:
-    raw = load(MUTED_FILE, {})
-    pairs = set()
-    items = raw.get("pairs", []) if isinstance(raw, dict) else []
-    for item in items or []:
-        try:
-            pairs.add((int(item[0]), int(item[1])))
-        except (TypeError, ValueError, IndexError):
-            continue
-    return pairs
-
-
-def _save_muted() -> None:
-    save(MUTED_FILE, {"pairs": [list(key) for key in sorted(_MUTED_BY_BOT)]})
-
-
-_MUTED_BY_BOT = _load_muted()
+# Старые серверные мьюты (от версий до 26.11.3) снимаем автоматом,
+# но не вечно: через несколько дней перестаем лезть в ручные муты модераторов.
+LEGACY_MUTE_WINDOW_DAYS = 7
 
 
 def _unverified_role_id(guild_id: int) -> int:
@@ -138,43 +121,59 @@ def _has_unverified(member: discord.Member) -> bool:
     return not _already_verified(member, male_id, female_id)
 
 
-def _needs_passage_mute(member: discord.Member) -> bool:
-    """Новичкам в проходке закрываем микрофон. Стафф и боты — не трогаем."""
-    if member.bot or _is_staff(member):
-        return False
-    return _has_unverified(member)
-
-
 def _passage_voice_channels(guild):
     """Все войсы-проходки сервера."""
     return [ch for ch in getattr(guild, "voice_channels", []) if is_passage_channel(ch)]
 
 
-async def _set_passage_speak(member: discord.Member, allow: bool, reason: str) -> bool:
-    """Закрывает (allow=False) или открывает микрофон только в проходках.
+async def _sync_passage_overwrites(guild, reason: str = "Проходка: мут роли новичка") -> int:
+    """Вешает запрет говорить на РОЛЬ новичка в проходках.
 
-    Права остальных войсов не трогаем: человек сидит в проходке — молчит,
-    перешёл в обычный войс — говорит как все. True, если хоть один канал обработан.
+    Так мут не «прилипает» к человеку: он живёт ровно столько, сколько у него
+    роль. Верифицировали — роль сняли, и он говорит везде.
     """
-    target = None if allow else False
-    applied = False
-    for channel in _passage_voice_channels(member.guild):
+    role = _find_unverified_role(guild)
+    if role is None:
+        return 0
+    done = 0
+    for channel in _passage_voice_channels(guild):
         try:
-            overwrite = channel.overwrites_for(member)
-            if overwrite.speak != target:
-                overwrite.speak = target
-                await channel.set_permissions(member, overwrite=overwrite, reason=reason)
-            applied = True
+            overwrite = channel.overwrites_for(role)
+            if overwrite.speak is not False:
+                overwrite.speak = False
+                await channel.set_permissions(role, overwrite=overwrite, reason=reason)
+            done += 1
         except (discord.Forbidden, discord.HTTPException):
             continue
-    return applied
+    return done
+
+
+async def _clear_member_overwrites(guild, reason: str = "Проходка: снимаю личные запреты") -> int:
+    """Убирает персональные speak-запреты, оставшиеся от прошлой версии."""
+    cleared = 0
+    role_ids = {r.id for r in getattr(guild, "roles", [])}
+    for channel in _passage_voice_channels(guild):
+        for target, overwrite in list(getattr(channel, "overwrites", {}).items()):
+            if target.id in role_ids or overwrite.speak is None:
+                continue
+            overwrite.speak = None
+            try:
+                await channel.set_permissions(
+                    target,
+                    overwrite=None if overwrite.is_empty() else overwrite,
+                    reason=reason,
+                )
+                cleared += 1
+            except (discord.Forbidden, discord.HTTPException):
+                continue
+    return cleared
 
 
 async def _clear_global_mute(
     member: discord.Member,
-    reason: str = "Глобальный мьют снят: мут только в проходке",
+    reason: str = "Серверный мьют снят: мут только по роли в проходке",
 ) -> bool:
-    """Снимает серверный мут. Работает и когда человек не сидит в войсе."""
+    """Снимает серверный мьют. Работает и когда человек не сидит в войсе."""
     try:
         await member.edit(mute=False, reason=reason)
         return True
@@ -182,23 +181,52 @@ async def _clear_global_mute(
         return False
 
 
-async def _mute_in_passage(member: discord.Member, reason: str = "Проходка: микрофон закрыт до верификации"):
-    if not await _set_passage_speak(member, allow=False, reason=reason):
-        return False
-    _MUTED_BY_BOT.add((member.guild.id, member.id))
-    _save_muted()
-    return True
+def _legacy_mute_window_left(guild) -> bool:
+    """Окно разовой чистки старых серверных мьютов (несколько дней с первого старта)."""
+    data = load(SETTINGS_FILE, {})
+    section = data.setdefault(str(guild.id), {})
+    until = section.get("legacy_mute_cleanup_until")
+    now = datetime.datetime.now(datetime.timezone.utc).timestamp()
+    if not until:
+        until = now + LEGACY_MUTE_WINDOW_DAYS * 86400
+        section["legacy_mute_cleanup_until"] = until
+        save(SETTINGS_FILE, data)
+    return now < until
 
 
-async def _unmute_guest(member: discord.Member, reason: str = "Мут в проходке снят"):
-    key = (member.guild.id, member.id)
-    applied = await _set_passage_speak(member, allow=True, reason=reason)
-    # Совместимость: если человека успели глобально замутить старой версией — снимаем только за собой
-    if key in _MUTED_BY_BOT:
+async def _clear_server_mutes(guild, reason: str = "Чистка старых серверных мьютов") -> int:
+    """Снимает серверные мьюты со всех, кто сейчас в войсах (стафф и ботов не трогаем)."""
+    cleared = 0
+    for state in list(getattr(guild, "voice_states", {}).values()):
+        if not getattr(state, "mute", False):
+            continue
+        member = getattr(state, "member", None)
+        if member is None or member.bot or _is_staff(member):
+            continue
         if await _clear_global_mute(member, reason):
-            applied = True
-        _MUTED_BY_BOT.discard(key)
-        _save_muted()
+            cleared += 1
+    return cleared
+
+
+async def _unmute_guest(member: discord.Member, reason: str = "Мут в проходке снят") -> bool:
+    """Снимает с человека всё, что могло закрыть ему микрофон."""
+    applied = False
+    for channel in _passage_voice_channels(member.guild):
+        try:
+            overwrite = channel.overwrites_for(member)
+            if overwrite.speak is not None:
+                overwrite.speak = None
+                await channel.set_permissions(
+                    member,
+                    overwrite=None if overwrite.is_empty() else overwrite,
+                    reason=reason,
+                )
+                applied = True
+        except (discord.Forbidden, discord.HTTPException):
+            continue
+    voice = getattr(member, "voice", None)
+    if voice is not None and getattr(voice, "mute", False):
+        applied = await _clear_global_mute(member, reason) or applied
     return applied
 
 
@@ -533,8 +561,7 @@ class VerifyView(discord.ui.View):
                     await self.member.remove_roles(uv_role, reason="Верифицирован")
                 except (discord.Forbidden, discord.HTTPException):
                     pass
-            if (guild.id, self.member.id) in _MUTED_BY_BOT:
-                await _unmute_guest(self.member, "Верифицирован")
+            await _unmute_guest(self.member, "Верифицирован")
 
             # Лог в файл
             log = load(LOG_FILE, {})
@@ -821,22 +848,26 @@ class Verify(commands.Cog):
 
     @commands.Cog.listener()
     async def on_ready(self):
-        # После рестарта догоняем тех, кто уже сидит в проходке
+        # Один раз за старт: роль новичка получает запрет говорить в проходках,
+        # личные запреты и старые серверные мьюты подчищаем.
         if self._ready_scan_done:
             return
         self._ready_scan_done = True
         for guild in self.bot.guilds:
-            for channel in guild.voice_channels:
-                in_passage = is_passage_channel(channel)
-                for member in channel.members:
-                    if not _needs_passage_mute(member):
-                        continue
-                    voice = getattr(member, "voice", None)
-                    if voice is not None and getattr(voice, "mute", False):
-                        # Хвост от старой версии: глобальный мьют снимаем, оставляем только проходку
-                        await _clear_global_mute(member)
-                    if in_passage:
-                        await _mute_in_passage(member, "Проходка: мут после рестарта")
+            try:
+                channels = await _sync_passage_overwrites(guild)
+                personal = await _clear_member_overwrites(guild)
+                mutes = 0
+                if _legacy_mute_window_left(guild):
+                    mutes = await _clear_server_mutes(guild)
+                logger.info(
+                    "Проходка: роль настроена в %s каналах, снято личных запретов %s, серверных мьютов %s",
+                    channels,
+                    personal,
+                    mutes,
+                )
+            except (discord.Forbidden, discord.HTTPException):
+                continue
 
     @commands.Cog.listener()
     async def on_member_join(self, member: discord.Member):
@@ -849,6 +880,8 @@ class Verify(commands.Cog):
             await member.add_roles(role, reason="Новичок: до верификации")
         except (discord.Forbidden, discord.HTTPException):
             pass
+        # Роль могли создать только что — тогда права в проходках ещё не стоят
+        await _sync_passage_overwrites(member.guild)
 
     @commands.Cog.listener()
     async def on_voice_state_update(
@@ -857,28 +890,16 @@ class Verify(commands.Cog):
         before: discord.VoiceState,
         after: discord.VoiceState,
     ):
-        if member.bot:
+        if member.bot or member.guild is None:
             return
-        was_in = before.channel is not None and is_passage_channel(before.channel)
-        now_in = after.channel is not None and is_passage_channel(after.channel)
-        key = (member.guild.id, member.id)
 
-        if now_in and not was_in:
-            if _needs_passage_mute(member):
-                await _mute_in_passage(member)
-        elif was_in and not now_in:
-            # Снимаем только свой мут: чужой не трогаем
-            if key in _MUTED_BY_BOT:
-                await _unmute_guest(member, "Вышел из проходки")
-
-        # Глобальный мьют у неверифицированного — это хвост старой версии.
-        # Политика бота: глушим только в проходке, в обычных войсах человек говорит.
-        if (
-            after.channel is not None
-            and getattr(after, "mute", False)
-            and _needs_passage_mute(member)
-        ):
-            await _clear_global_mute(member)
+        # Мут в проходке держится на роли, а не на человеке: заходи/выходи сколько
+        # хочешь, ничего не прилипнет. Здесь только подчистка хвостов.
+        if not getattr(after, "mute", False):
+            return
+        if _is_staff(member) or not _legacy_mute_window_left(member.guild):
+            return
+        await _clear_global_mute(member, "Снят старый серверный мьют (мут только по роли в проходке)")
 
     @app_commands.command(name="verify", description="Верифицировать участника (только стафф)")
     @app_commands.describe(member="Участник которого верифицируем")
@@ -933,8 +954,8 @@ class Verify(commands.Cog):
                 await member.add_roles(uv_role, reason="Снятие верификации")
             except (discord.Forbidden, discord.HTTPException):
                 pass
-        if member.voice and is_passage_channel(member.voice.channel) and _needs_passage_mute(member):
-            await _mute_in_passage(member, "Проходка: верификация снята")
+        # Мут в проходке включится сам: у человека снова роль новичка
+        await _sync_passage_overwrites(interaction.guild)
 
         await interaction.response.send_message(
             f"✅ Верификация снята с {member.mention}.", ephemeral=True
@@ -950,15 +971,34 @@ class Verify(commands.Cog):
             await interaction.response.send_message("Ботам мут не нужен.", ephemeral=True)
             return
 
-        ok = await _unmute_guest(member, f"Размутил {interaction.user}")
+        await _unmute_guest(member, f"Размутил {interaction.user}")
+        ok = await _clear_global_mute(member, f"Размутил {interaction.user}")
         if not ok:
             await interaction.response.send_message(
-                "Не смог снять мут: проверь право «Управление каналами» и позицию роли бота.",
+                "Не смог снять серверный мьют: проверь право «Заглушать участников» и позицию роли бота.",
                 ephemeral=True,
             )
             return
         await interaction.response.send_message(
-            f"🔊 {member.mention} снова может говорить. Не забывай: он всё ещё ждёт верификацию.",
+            f"🔊 {member.mention} снова может говорить. Если не слышно — пусть перезайдёт в канал.",
+            ephemeral=True,
+        )
+
+    @app_commands.command(
+        name="unmute_all",
+        description="Снять серверные мьюты со всех, кто сейчас в войсах (только стафф)",
+    )
+    @app_commands.default_permissions(manage_guild=True)
+    @app_commands.checks.has_permissions(manage_guild=True)
+    async def unmute_all(self, interaction: discord.Interaction):
+        if not _is_staff(interaction.user):
+            await interaction.response.send_message("Нет прав.", ephemeral=True)
+            return
+        await interaction.response.defer(ephemeral=True)
+        cleared = await _clear_server_mutes(interaction.guild, f"Размутил {interaction.user}")
+        await interaction.followup.send(
+            f"🔊 Снято серверных мьютов: **{cleared}**.",
+            f"В проходке новички всё равно молчат — это право роли, а не мьют человеку.",
             ephemeral=True,
         )
 

@@ -224,19 +224,25 @@ class _UVOverwrite:
     def __init__(self, speak=None):
         self.speak = speak
 
+    def is_empty(self):
+        return self.speak is None
+
 
 class _UVChannel:
     def __init__(self, cid, name):
         self.id = cid
         self.name = name
-        self.perms = {}
+        self.overwrites = {}
         self.calls = 0
 
-    def overwrites_for(self, member):
-        return self.perms.setdefault(member.id, _UVOverwrite())
+    def overwrites_for(self, target):
+        return self.overwrites.setdefault(target, _UVOverwrite())
 
-    async def set_permissions(self, member, overwrite=None, reason=None):
-        self.perms[member.id] = overwrite
+    async def set_permissions(self, target, overwrite=None, reason=None):
+        if overwrite is None:
+            self.overwrites.pop(target, None)
+        else:
+            self.overwrites[target] = overwrite
         self.calls += 1
 
 
@@ -245,6 +251,7 @@ class _UVGuild:
         self.id = 777
         self.roles = roles
         self.voice_channels = voice_channels or []
+        self.voice_states = {}
 
 
 class _UVMember:
@@ -261,6 +268,17 @@ class _UVMember:
         self.kw = kw
 
 
+class _UVVoice:
+    def __init__(self, mute=False):
+        self.mute = mute
+
+
+class _UVState:
+    def __init__(self, member, mute=False):
+        self.member = member
+        self.mute = mute
+
+
 uv_role = _UVRole(900, "🔒 Не верифицирован")
 male_role = _UVRole(sc.STAFF_ROLE_IDS[0], "♂")
 passage_one = _UVChannel(1001, "🍑 · Проходка")
@@ -270,49 +288,70 @@ guild_uv = _UVGuild([uv_role, male_role], [passage_one, passage_two, lounge])
 
 novice = _UVMember(101, guild_uv, [uv_role])
 verified = _UVMember(102, guild_uv, [male_role])
-blank = _UVMember(103, guild_uv, [])
-
-check("unverified role found", verify_cog._find_unverified_role(guild_uv) is uv_role)
-check("novice needs mute", verify_cog._needs_passage_mute(novice))
-check("verified not muted", not verify_cog._needs_passage_mute(verified))
-guild_norole = _UVGuild([male_role])
-check("fallback mutes roleless", verify_cog._needs_passage_mute(_UVMember(105, guild_norole, [])))
-check("no role and no unverified role -> not muted", not verify_cog._needs_passage_mute(blank))
-check("staff not muted", not verify_cog._needs_passage_mute(_UVMember(104, guild_uv, [uv_role], admin=True)))
-check("bot not muted", not verify_cog._needs_passage_mute(blank) if blank.bot else True)
+admin = _UVMember(104, guild_uv, [uv_role], admin=True)
 
 import asyncio
 
-asyncio.run(verify_cog._mute_in_passage(novice))
-check("mute sets flag", (777, 101) in verify_cog._MUTED_BY_BOT)
+check("unverified role found", verify_cog._find_unverified_role(guild_uv) is uv_role)
+
+# Мут вешается на роль, а не на человека
+done = asyncio.run(verify_cog._sync_passage_overwrites(guild_uv))
+check("role overwrite set in passages", done == 2, str(done))
 check(
-    "mute closes speak in passages",
-    passage_one.perms.get(101) is not None
-    and passage_one.perms[101].speak is False
-    and passage_two.perms.get(101) is not None
-    and passage_two.perms[101].speak is False,
+    "role cannot speak in passage",
+    passage_one.overwrites.get(uv_role) is not None and passage_one.overwrites[uv_role].speak is False,
 )
-check("mute leaves other voice alone", 101 not in lounge.perms)
-check("mute is not global", novice.kw == {}, str(novice.kw))
-check("mute saved to disk", [777, 101] in storage.load("muted.json", {}).get("pairs", []))
+check("role cannot speak in passage 2", passage_two.overwrites[uv_role].speak is False)
+check("role untouched in normal voice", uv_role not in lounge.overwrites)
+check("no personal mutes created", novice not in passage_one.overwrites and verified not in passage_one.overwrites)
+check("no server mute set", novice.kw == {} and verified.kw == {}, str(novice.kw))
 
-asyncio.run(verify_cog._unmute_guest(novice))
-check("unmute clears flag", (777, 101) not in verify_cog._MUTED_BY_BOT)
+asyncio.run(verify_cog._sync_passage_overwrites(guild_uv))
+check("second sync is a no-op", passage_one.calls == 1, str(passage_one.calls))
+
+# Личные запреты от прошлой версии снимаются, ролевой остаётся
+passage_one.overwrites[novice] = _UVOverwrite(speak=False)
+passage_two.overwrites[novice] = _UVOverwrite(speak=False)
+passage_one.overwrites[uv_role] = _UVOverwrite(speak=False)
+cleared = asyncio.run(verify_cog._clear_member_overwrites(guild_uv))
 check(
-    "unmute opens speak in passages",
-    passage_one.perms[101].speak is None and passage_two.perms[101].speak is None,
+    "personal mutes cleared",
+    novice not in passage_one.overwrites and novice not in passage_two.overwrites,
+    str(cleared),
 )
-check("unmute clears global mute", novice.kw.get("mute") is False, str(novice.kw))
-check("unmute wipes disk flag", [777, 101] not in storage.load("muted.json", {}).get("pairs", []))
+check("role mute survives cleanup", passage_one.overwrites[uv_role].speak is False)
 
-# Старый глобальный мьют снимается даже когда человек не в войсе
-blank.voice = None
-asyncio.run(verify_cog._clear_global_mute(blank))
-check("clear global mute without voice", blank.kw.get("mute") is False, str(blank.kw))
+# Серверный мьют снимается
+novice.voice = _UVVoice(mute=True)
+ok = asyncio.run(verify_cog._unmute_guest(novice))
+check("unmute clears server mute", novice.kw.get("mute") is False and ok, str(novice.kw))
 
-# Список мутов переживает рестарт: читается с диска
-storage.save("muted.json", {"pairs": [[777, 999]]})
-check("muted list loads from disk", (777, 999) in verify_cog._load_muted())
+# Разовая чистка серверных мьютов: стафф и ботов не трогаем
+muted_user = _UVMember(201, guild_uv, [])
+muted_user.voice = _UVVoice(mute=True)
+muted_admin = _UVMember(202, guild_uv, [uv_role], admin=True)
+muted_admin.voice = _UVVoice(mute=True)
+bot_member = _UVMember(203, guild_uv, [])
+bot_member.bot = True
+bot_member.voice = _UVVoice(mute=True)
+quiet = _UVMember(204, guild_uv, [male_role])
+quiet.voice = _UVVoice(mute=False)
+guild_uv.voice_states = {
+    m.id: _UVState(m, m.voice.mute) for m in (muted_user, muted_admin, bot_member, quiet)
+}
+count = asyncio.run(verify_cog._clear_server_mutes(guild_uv))
+check("cleanup unmutes regular members", count == 1 and muted_user.kw.get("mute") is False, str(count))
+check("cleanup skips staff", muted_admin.kw == {}, str(muted_admin.kw))
+check("cleanup skips bots", bot_member.kw == {}, str(bot_member.kw))
+check("cleanup skips non-muted", quiet.kw == {}, str(quiet.kw))
+
+# Окно чистки: открывается само и закрывается по сроку
+storage.save("settings.json", {})
+check("legacy window opens", verify_cog._legacy_mute_window_left(guild_uv))
+stored = storage.load("settings.json", {}).get("777", {})
+check("legacy window saved", stored.get("legacy_mute_cleanup_until", 0) > 0)
+storage.save("settings.json", {"777": {"legacy_mute_cleanup_until": 1}})
+check("legacy window closes when expired", not verify_cog._legacy_mute_window_left(guild_uv))
 
 # ── Ответ на нажатие, когда интеракция протухла (10062) ───────────────────────
 
@@ -368,13 +407,19 @@ check("respond falls back to followup on 10062", fu.sent is not None, str(fu.sen
 
 msg = _MsgFake()
 asyncio.run(
-    verify_cog._safe_respond(_InterFake(_RespFake(notfound=True), _FollowupFake(fail=True), msg), content="ok")
+    verify_cog._safe_respond(
+        _InterFake(_RespFake(notfound=True), _FollowupFake(fail=True), msg), content="ok"
+    )
 )
 check("respond falls back to message edit", msg.edited is not None, str(msg.edited))
 
 check(
     "respond never raises",
-    asyncio.run(verify_cog._safe_respond(_InterFake(_RespFake(notfound=True), _FollowupFake(fail=True)), content="x"))
+    asyncio.run(
+        verify_cog._safe_respond(
+            _InterFake(_RespFake(notfound=True), _FollowupFake(fail=True)), content="x"
+        )
+    )
     is False,
 )
 
