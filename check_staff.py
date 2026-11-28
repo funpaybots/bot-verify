@@ -31,6 +31,7 @@ class FakePerms:
     def __init__(self, admin=False):
         self.administrator = admin
         self.mute_members = admin
+        self.move_members = admin
 
 
 class FakeMember:
@@ -543,6 +544,91 @@ verify_cog._save_staff_mute(555, 401, {"until": 1, "by": 1, "reason": "стар�
 check("expired staff mute ignored", verify_cog._staff_mute_entry(555, 401) is None)
 asyncio.run(verify_cog._clear_server_mutes(mute_guild))
 check("cleanup clears expired mute", victim.kw.get("mute") is False, str(victim.kw))
+
+# ── После верификации: кидаем к людям ────────────────────────────────────────
+
+class _FriendChannel:
+    def __init__(self, cid, name, members=None, limit=0):
+        self.id = cid
+        self.name = name
+        self.members = members or []
+        self.user_limit = limit
+
+
+class _FriendPerson:
+    def __init__(self, uid, bot=False):
+        self.id = uid
+        self.bot = bot
+
+
+class _FriendVoice:
+    def __init__(self, channel):
+        self.channel = channel
+
+
+class _FriendMember:
+    def __init__(self, uid, channel=None, guild=None):
+        self.id = uid
+        self.bot = False
+        self.guild = guild
+        self.voice = _FriendVoice(channel) if channel is not None else None
+        self.moved_to = None
+
+    async def move_to(self, channel, reason=None):
+        self.moved_to = channel
+
+
+class _FriendGuild:
+    def __init__(self, channels):
+        self.voice_channels = channels
+        self.me = type("Me", (), {"guild_permissions": FakePerms(True)})()
+
+
+class _FriendInter:
+    def __init__(self, guild):
+        self.guild = guild
+
+
+passage = _FriendChannel(7001, "🍑 · Проходка", [_FriendPerson(1)])
+afk = _FriendChannel(7002, "AFK", [_FriendPerson(2)])
+empty = _FriendChannel(7003, "пустой-войс", [])
+full = _FriendChannel(7004, "полный", [_FriendPerson(3), _FriendPerson(4)], limit=2)
+only_bots = _FriendChannel(7005, "боты", [_FriendPerson(5, bot=True)])
+fun = _FriendChannel(7006, "🎉 · посиделки", [_FriendPerson(6), _FriendPerson(7)])
+
+fguild = _FriendGuild([passage, afk, empty, full, only_bots, fun])
+picked = verify_cog._random_voice_with_people(fguild)
+check("picks room with people", picked is fun, str(getattr(picked, "name", None)))
+check("never picks passage", verify_cog._random_voice_with_people(_FriendGuild([passage])) is None)
+check("skips empty rooms", verify_cog._random_voice_with_people(_FriendGuild([empty])) is None)
+check("skips full rooms", verify_cog._random_voice_with_people(_FriendGuild([full])) is None)
+check("skips bot-only rooms", verify_cog._random_voice_with_people(_FriendGuild([only_bots])) is None)
+check(
+    "excludes current channel",
+    verify_cog._random_voice_with_people(_FriendGuild([fun]), exclude=fun) is None,
+)
+
+# Из проходки вытаскиваем к людям
+fresh = _FriendMember(801, passage, fguild)
+asyncio.run(verify_cog.VerifyView._send_to_friends(None, _FriendInter(fguild), fresh))
+check("moves verified out of passage", fresh.moved_to is fun, str(fresh.moved_to))
+
+# Уже сидит с людьми в обычном войсе — не дёргаем
+settled = _FriendMember(802, fun, fguild)
+asyncio.run(verify_cog.VerifyView._send_to_friends(None, _FriendInter(fguild), settled))
+check("keeps member who already has company", settled.moved_to is None, str(settled.moved_to))
+
+# Не в войсе — переносить некуда
+offline = _FriendMember(803, None, fguild)
+asyncio.run(verify_cog.VerifyView._send_to_friends(None, _FriendInter(fguild), offline))
+check("does nothing when not in voice", offline.moved_to is None)
+
+# Нет права «Перемещать участников» — молчим
+noperm_guild = _FriendGuild([passage, fun])
+noperm_guild.me = type("Me", (), {"guild_permissions": FakePerms(False)})()
+noperm = _FriendMember(804, passage, noperm_guild)
+asyncio.run(verify_cog.VerifyView._send_to_friends(None, _FriendInter(noperm_guild), noperm))
+check("needs move permission", noperm.moved_to is None)
 
 # Поиск каналов для карты сервера
 class _FakeCh:

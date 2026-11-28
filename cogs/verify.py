@@ -5,6 +5,7 @@ import asyncio
 import datetime
 import difflib
 import logging
+import random
 import re
 
 import discord
@@ -126,6 +127,39 @@ def _has_unverified(member: discord.Member) -> bool:
 def _passage_voice_channels(guild):
     """Все войсы-проходки сервера."""
     return [ch for ch in getattr(guild, "voice_channels", []) if is_passage_channel(ch)]
+
+
+# Куда не кидаем после верификации: проходки, афк, стафф-каналы и кнопки-триггеры
+FRIENDS_SKIP_HINTS = (
+    "проходк",
+    "afk",
+    "афк",
+    "стафф",
+    "staff",
+    "создать",
+    "войти",
+    "плеер",
+    "музык",
+)
+
+
+def _random_voice_with_people(guild, exclude=None):
+    """Случайный войс, где уже есть живые люди и есть место."""
+    options = []
+    for channel in getattr(guild, "voice_channels", []):
+        name = (getattr(channel, "name", "") or "").lower()
+        if any(hint in name for hint in FRIENDS_SKIP_HINTS):
+            continue
+        if exclude is not None and channel.id == exclude.id:
+            continue
+        members = list(getattr(channel, "members", []) or [])
+        if not any(not m.bot for m in members):
+            continue
+        limit = getattr(channel, "user_limit", 0) or 0
+        if limit and len(members) >= limit:
+            continue
+        options.append(channel)
+    return random.choice(options) if options else None
 
 
 async def _sync_passage_overwrites(guild, reason: str = "Проходка: мут роли новичка") -> int:
@@ -541,6 +575,29 @@ class VerifyView(discord.ui.View):
         self.verifier = verifier
         self.done = False
 
+    async def _send_to_friends(self, interaction, member):
+        """Верифицировали — вытаскиваем из проходки туда, где уже есть люди."""
+        voice = getattr(member, "voice", None)
+        current = getattr(voice, "channel", None) if voice is not None else None
+        if current is None:
+            return
+
+        others = [m for m in getattr(current, "members", []) if not m.bot and m.id != member.id]
+        if others and not is_passage_channel(current):
+            return  # уже сидит с людьми — не дёргаем
+
+        perms = getattr(getattr(interaction.guild, "me", None), "guild_permissions", None)
+        if perms is None or not perms.move_members:
+            return
+
+        target = _random_voice_with_people(member.guild, exclude=current)
+        if target is None:
+            return
+        try:
+            await member.move_to(target, reason="Верифицирован: иди знакомиться")
+        except (discord.Forbidden, discord.HTTPException):
+            pass
+
     async def _apply(
         self,
         interaction: discord.Interaction,
@@ -610,6 +667,8 @@ class VerifyView(discord.ui.View):
                 except (discord.Forbidden, discord.HTTPException):
                     pass
             await _unmute_guest(self.member, "Верифицирован")
+
+            await self._send_to_friends(interaction, self.member)
 
             # Лог в файл
             log = load(LOG_FILE, {})
