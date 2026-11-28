@@ -293,6 +293,7 @@ check(
 )
 check("mute leaves other voice alone", 101 not in lounge.perms)
 check("mute is not global", novice.kw == {}, str(novice.kw))
+check("mute saved to disk", [777, 101] in storage.load("muted.json", {}).get("pairs", []))
 
 asyncio.run(verify_cog._unmute_guest(novice))
 check("unmute clears flag", (777, 101) not in verify_cog._MUTED_BY_BOT)
@@ -300,6 +301,17 @@ check(
     "unmute opens speak in passages",
     passage_one.perms[101].speak is None and passage_two.perms[101].speak is None,
 )
+check("unmute clears global mute", novice.kw.get("mute") is False, str(novice.kw))
+check("unmute wipes disk flag", [777, 101] not in storage.load("muted.json", {}).get("pairs", []))
+
+# Старый глобальный мьют снимается даже когда человек не в войсе
+blank.voice = None
+asyncio.run(verify_cog._clear_global_mute(blank))
+check("clear global mute without voice", blank.kw.get("mute") is False, str(blank.kw))
+
+# Список мутов переживает рестарт: читается с диска
+storage.save("muted.json", {"pairs": [[777, 999]]})
+check("muted list loads from disk", (777, 999) in verify_cog._load_muted())
 
 # Поиск каналов для карты сервера
 class _FakeCh:

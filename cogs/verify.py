@@ -66,8 +66,29 @@ def _get_ids(guild_id: int):
 UNVERIFIED_ROLE_NAME = "🔒 Не верифицирован"
 UNVERIFIED_NAME_HINTS = ("не верифицирован", "неверифицирован", "unverified", "анвереф")
 
-# Кого бот сам замутил: {(guild_id, user_id)} — чтобы снимать мут только за собой
-_MUTED_BY_BOT = set()
+# Кого бот сам замутил: {(guild_id, user_id)} — чтобы снимать мут только за собой.
+# Храним на диске: после рестарта память не должна теряться, иначе старые
+# глобальные мьюты снять уже нечем.
+MUTED_FILE = "muted.json"
+
+
+def _load_muted() -> set:
+    raw = load(MUTED_FILE, {})
+    pairs = set()
+    items = raw.get("pairs", []) if isinstance(raw, dict) else []
+    for item in items or []:
+        try:
+            pairs.add((int(item[0]), int(item[1])))
+        except (TypeError, ValueError, IndexError):
+            continue
+    return pairs
+
+
+def _save_muted() -> None:
+    save(MUTED_FILE, {"pairs": [list(key) for key in sorted(_MUTED_BY_BOT)]})
+
+
+_MUTED_BY_BOT = _load_muted()
 
 
 def _unverified_role_id(guild_id: int) -> int:
@@ -149,10 +170,23 @@ async def _set_passage_speak(member: discord.Member, allow: bool, reason: str) -
     return applied
 
 
+async def _clear_global_mute(
+    member: discord.Member,
+    reason: str = "Глобальный мьют снят: мут только в проходке",
+) -> bool:
+    """Снимает серверный мут. Работает и когда человек не сидит в войсе."""
+    try:
+        await member.edit(mute=False, reason=reason)
+        return True
+    except (discord.Forbidden, discord.HTTPException):
+        return False
+
+
 async def _mute_in_passage(member: discord.Member, reason: str = "Проходка: микрофон закрыт до верификации"):
     if not await _set_passage_speak(member, allow=False, reason=reason):
         return False
     _MUTED_BY_BOT.add((member.guild.id, member.id))
+    _save_muted()
     return True
 
 
@@ -161,14 +195,10 @@ async def _unmute_guest(member: discord.Member, reason: str = "Мут в про�
     applied = await _set_passage_speak(member, allow=True, reason=reason)
     # Совместимость: если человека успели глобально замутить старой версией — снимаем только за собой
     if key in _MUTED_BY_BOT:
-        voice = getattr(member, "voice", None)
-        if voice is not None and getattr(voice, "mute", False):
-            try:
-                await member.edit(mute=False, reason=reason)
-                applied = True
-            except (discord.Forbidden, discord.HTTPException):
-                pass
-    _MUTED_BY_BOT.discard(key)
+        if await _clear_global_mute(member, reason):
+            applied = True
+        _MUTED_BY_BOT.discard(key)
+        _save_muted()
     return applied
 
 
@@ -784,10 +814,15 @@ class Verify(commands.Cog):
         self._ready_scan_done = True
         for guild in self.bot.guilds:
             for channel in guild.voice_channels:
-                if not is_passage_channel(channel):
-                    continue
+                in_passage = is_passage_channel(channel)
                 for member in channel.members:
-                    if _needs_passage_mute(member):
+                    if not _needs_passage_mute(member):
+                        continue
+                    voice = getattr(member, "voice", None)
+                    if voice is not None and getattr(voice, "mute", False):
+                        # Хвост от старой версии: глобальный мьют снимаем, оставляем только проходку
+                        await _clear_global_mute(member)
+                    if in_passage:
                         await _mute_in_passage(member, "Проходка: мут после рестарта")
 
     @commands.Cog.listener()
@@ -822,6 +857,15 @@ class Verify(commands.Cog):
             # Снимаем только свой мут: чужой не трогаем
             if key in _MUTED_BY_BOT:
                 await _unmute_guest(member, "Вышел из проходки")
+
+        # Глобальный мьют у неверифицированного — это хвост старой версии.
+        # Политика бота: глушим только в проходке, в обычных войсах человек говорит.
+        if (
+            after.channel is not None
+            and getattr(after, "mute", False)
+            and _needs_passage_mute(member)
+        ):
+            await _clear_global_mute(member)
 
     @app_commands.command(name="verify", description="Верифицировать участника (только стафф)")
     @app_commands.describe(member="Участник которого верифицируем")
