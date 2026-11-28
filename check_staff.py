@@ -489,9 +489,22 @@ class _MuteMember:
         self.kw = {}
         self.voice = _UVVoice(mute=False)
         self.mention = f"<@{uid}>"
+        self.top_role = _TopRole(1)
 
     async def edit(self, **kw):
         self.kw = kw
+
+
+class _TopRole:
+    def __init__(self, pos):
+        self.position = pos
+        self.mention = f"<@&{pos}>"
+
+    def __ge__(self, other):
+        return self.position >= other.position
+
+    def __lt__(self, other):
+        return self.position < other.position
 
 
 class _MuteGuild:
@@ -500,7 +513,8 @@ class _MuteGuild:
         self.roles = []
         self.voice_channels = []
         self.voice_states = {}
-        self.me = type("Me", (), {"guild_permissions": FakePerms(True)})()
+        self.owner_id = 999999
+        self.me = type("Me", (), {"guild_permissions": FakePerms(True), "top_role": _TopRole(100)})()
 
 
 mute_guild = _MuteGuild()

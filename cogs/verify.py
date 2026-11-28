@@ -1089,6 +1089,23 @@ class Verify(commands.Cog):
             )
             return
 
+        if member.id == interaction.guild.owner_id:
+            await interaction.response.send_message(
+                "Владельца сервера заглушить нельзя — Discord не разрешает это ни одному боту.",
+                ephemeral=True,
+            )
+            return
+
+        me = interaction.guild.me
+        if me is not None and getattr(member, "top_role", None) is not None and member.top_role >= me.top_role:
+            await interaction.response.send_message(
+                "Не могу: роль участника выше или равна роли бота.\n"
+                f"Роль бота: {me.top_role.mention}, роль участника: {member.top_role.mention}.\n"
+                "Подними роль бота выше в «Настройки сервера → Роли».",
+                ephemeral=True,
+            )
+            return
+
         try:
             await member.edit(mute=True, reason=f"Мут от {interaction.user}: {reason}"[:400])
         except (discord.Forbidden, discord.HTTPException):
