@@ -69,9 +69,9 @@ def _get_ids(guild_id: int):
 UNVERIFIED_ROLE_NAME = "🔒 Не верифицирован"
 UNVERIFIED_NAME_HINTS = ("не верифицирован", "неверифицирован", "unverified", "анвереф")
 
-# Старые серверные мьюты (от версий до 26.11.3) снимаем автоматом,
-# но не вечно: через несколько дней перестаем лезть в ручные муты модераторов.
-LEGACY_MUTE_WINDOW_DAYS = 7
+# Серверных мьютов в политике бота нет: мут — это право роли в проходке.
+# Всё, что висит на человеке, считаем хвостом старых сборок и снимаем.
+
 
 
 def _unverified_role_id(guild_id: int) -> int:
@@ -181,19 +181,6 @@ async def _clear_global_mute(
         return False
 
 
-def _legacy_mute_window_left(guild) -> bool:
-    """Окно разовой чистки старых серверных мьютов (несколько дней с первого старта)."""
-    data = load(SETTINGS_FILE, {})
-    section = data.setdefault(str(guild.id), {})
-    until = section.get("legacy_mute_cleanup_until")
-    now = datetime.datetime.now(datetime.timezone.utc).timestamp()
-    if not until:
-        until = now + LEGACY_MUTE_WINDOW_DAYS * 86400
-        section["legacy_mute_cleanup_until"] = until
-        save(SETTINGS_FILE, data)
-    return now < until
-
-
 async def _clear_server_mutes(guild, reason: str = "Чистка старых серверных мьютов") -> int:
     """Снимает серверные мьюты со всех, кто сейчас в войсах (стафф и ботов не трогаем)."""
     cleared = 0
@@ -208,9 +195,12 @@ async def _clear_server_mutes(guild, reason: str = "Чистка старых с
     return cleared
 
 
-async def _unmute_guest(member: discord.Member, reason: str = "Мут в проходке снят") -> bool:
-    """Снимает с человека всё, что могло закрыть ему микрофон."""
-    applied = False
+async def _unmute_guest(member: discord.Member, reason: str = "Мут в проходке снят") -> list:
+    """Снимает с человека всё, что могло закрыть ему микрофон.
+
+    Возвращает список снятого — по нему видно, что именно было не так.
+    """
+    removed = []
     for channel in _passage_voice_channels(member.guild):
         try:
             overwrite = channel.overwrites_for(member)
@@ -221,13 +211,12 @@ async def _unmute_guest(member: discord.Member, reason: str = "Мут в про�
                     overwrite=None if overwrite.is_empty() else overwrite,
                     reason=reason,
                 )
-                applied = True
+                removed.append(f"личный запрет в #{channel.name}")
         except (discord.Forbidden, discord.HTTPException):
             continue
-    voice = getattr(member, "voice", None)
-    if voice is not None and getattr(voice, "mute", False):
-        applied = await _clear_global_mute(member, reason) or applied
-    return applied
+    if await _clear_global_mute(member, reason):
+        removed.append("серверный мьют")
+    return removed
 
 
 # ── Карта сервера ─────────────────────────────────────────────────────────────
@@ -857,9 +846,7 @@ class Verify(commands.Cog):
             try:
                 channels = await _sync_passage_overwrites(guild)
                 personal = await _clear_member_overwrites(guild)
-                mutes = 0
-                if _legacy_mute_window_left(guild):
-                    mutes = await _clear_server_mutes(guild)
+                mutes = await _clear_server_mutes(guild)
                 logger.info(
                     "Проходка: роль настроена в %s каналах, снято личных запретов %s, серверных мьютов %s",
                     channels,
@@ -893,13 +880,13 @@ class Verify(commands.Cog):
         if member.bot or member.guild is None:
             return
 
-        # Мут в проходке держится на роли, а не на человеке: заходи/выходи сколько
-        # хочешь, ничего не прилипнет. Здесь только подчистка хвостов.
+        # Мут держится на роли новичка и только в проходках. Серверный мьют
+        # на человеке — всегда хвост старых сборок: снимаем, не спрашивая.
         if not getattr(after, "mute", False):
             return
-        if _is_staff(member) or not _legacy_mute_window_left(member.guild):
+        if _is_staff(member):
             return
-        await _clear_global_mute(member, "Снят старый серверный мьют (мут только по роли в проходке)")
+        await _clear_global_mute(member, "Снят серверный мьют: мут только по роли в проходке")
 
     @app_commands.command(name="verify", description="Верифицировать участника (только стафф)")
     @app_commands.describe(member="Участник которого верифицируем")
@@ -971,16 +958,17 @@ class Verify(commands.Cog):
             await interaction.response.send_message("Ботам мут не нужен.", ephemeral=True)
             return
 
-        await _unmute_guest(member, f"Размутил {interaction.user}")
-        ok = await _clear_global_mute(member, f"Размутил {interaction.user}")
-        if not ok:
+        removed = await _unmute_guest(member, f"Размутил {interaction.user}")
+        if not removed:
             await interaction.response.send_message(
-                "Не смог снять серверный мьют: проверь право «Заглушать участников» и позицию роли бота.",
+                "Снимать нечего: мьюта на человеке нет. Если не слышно — проверь его "
+                "«Заглушить»/«Выключить звук» в самом клиенте, это его кнопки, не сервер.",
                 ephemeral=True,
             )
             return
         await interaction.response.send_message(
-            f"🔊 {member.mention} снова может говорить. Если не слышно — пусть перезайдёт в канал.",
+            f"🔊 {member.mention} размучен: " + ", ".join(removed) + ".\n"
+            "Если не слышно — пусть перезайдёт в канал.",
             ephemeral=True,
         )
 

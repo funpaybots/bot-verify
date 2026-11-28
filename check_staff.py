@@ -209,7 +209,7 @@ sc.clear_dayoff(777, 4)
 check("no block without dayoff", verify_cog._dayoff_block(_FakeInteraction()) == "")
 
 verify_names = {c.name for c in verify_cog.Verify.__cog_app_commands__}
-check("verify commands intact", {"verify", "unverify", "verify_stats", "setup_verify", "post_map", "unmute"} <= verify_names)
+check("verify commands intact", {"verify", "unverify", "verify_stats", "setup_verify", "post_map", "unmute", "unmute_all"} <= verify_names)
 
 
 # ── Роль новичка и мут в проходке ─────────────────────────────────────────────
@@ -347,11 +347,7 @@ check("cleanup skips non-muted", quiet.kw == {}, str(quiet.kw))
 
 # Окно чистки: открывается само и закрывается по сроку
 storage.save("settings.json", {})
-check("legacy window opens", verify_cog._legacy_mute_window_left(guild_uv))
-stored = storage.load("settings.json", {}).get("777", {})
-check("legacy window saved", stored.get("legacy_mute_cleanup_until", 0) > 0)
-storage.save("settings.json", {"777": {"legacy_mute_cleanup_until": 1}})
-check("legacy window closes when expired", not verify_cog._legacy_mute_window_left(guild_uv))
+check("legacy window gone", not hasattr(verify_cog, "_legacy_mute_window_left"))
 
 # ── Ответ на нажатие, когда интеракция протухла (10062) ───────────────────────
 
