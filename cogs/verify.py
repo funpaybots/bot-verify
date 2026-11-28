@@ -985,7 +985,7 @@ class Verify(commands.Cog):
         await interaction.response.defer(ephemeral=True)
         cleared = await _clear_server_mutes(interaction.guild, f"Размутил {interaction.user}")
         await interaction.followup.send(
-            f"🔊 Снято серверных мьютов: **{cleared}**.",
+            f"🔊 Снято серверных мьютов: **{cleared}**.\n"
             f"В проходке новички всё равно молчат — это право роли, а не мьют человеку.",
             ephemeral=True,
         )

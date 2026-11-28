@@ -419,6 +419,60 @@ check(
     is False,
 )
 
+# ── /unmute_all вызывается без падений ────────────────────────────────────────
+
+class _RespCmd:
+    def __init__(self):
+        self.done = False
+        self.msg = None
+
+    def is_done(self):
+        return self.done
+
+    async def send_message(self, content=None, **kw):
+        self.msg = content
+        self.done = True
+
+    async def defer(self, **kw):
+        self.done = True
+
+
+class _FollowCmd:
+    def __init__(self):
+        self.sent = []
+
+    async def send(self, content=None, **kw):
+        self.sent.append((content, kw))
+
+
+class _InterCmd:
+    def __init__(self, guild, user, resp, followup):
+        self.guild = guild
+        self.user = user
+        self.response = resp
+        self.followup = followup
+
+
+muted_a = _UVMember(301, guild_uv, [])
+muted_a.voice = _UVVoice(mute=True)
+guild_uv.voice_states = {muted_a.id: _UVState(muted_a, True)}
+staff_user = _UVMember(302, guild_uv, [uv_role], admin=True)
+resp_cmd, follow_cmd = _RespCmd(), _FollowCmd()
+inter_cmd = _InterCmd(guild_uv, staff_user, resp_cmd, follow_cmd)
+cog = verify_cog.Verify(bot=None)
+crashed = ""
+try:
+    asyncio.run(verify_cog.Verify.unmute_all.callback(cog, inter_cmd))
+except Exception as exc:  # ловим ровно то, что падало в бою
+    crashed = f"{type(exc).__name__}: {exc}"
+check("unmute_all runs", crashed == "", crashed)
+check("unmute_all unmutes", muted_a.kw.get("mute") is False, str(muted_a.kw))
+check(
+    "unmute_all reports",
+    bool(follow_cmd.sent) and "Снято" in (follow_cmd.sent[0][0] or ""),
+    str(follow_cmd.sent),
+)
+
 # Поиск каналов для карты сервера
 class _FakeCh:
     def __init__(self, cid, name):
