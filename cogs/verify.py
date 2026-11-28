@@ -181,6 +181,18 @@ async def _clear_global_mute(
         return False
 
 
+def _speak_overwrites(channel) -> str:
+    """Кто именно запрещает говорить в канале: роль/участник и значение."""
+    parts = []
+    for target, overwrite in list(getattr(channel, "overwrites", {}).items()):
+        if overwrite.speak is None:
+            continue
+        kind = "роль" if isinstance(target, discord.Role) else "участник"
+        name = getattr(target, "name", None) or getattr(target, "display_name", "?")
+        parts.append(f"{kind} «{name}» — {'разрешено' if overwrite.speak else 'ЗАПРЕЩЕНО'}")
+    return "; ".join(parts[:10]) if parts else "нет"
+
+
 def _can_mute_members(guild) -> bool:
     """Есть ли у бота право «Заглушать участников» — без него мьют не снять."""
     perms = getattr(getattr(guild, "me", None), "guild_permissions", None)
@@ -935,6 +947,12 @@ class Verify(commands.Cog):
             perms = channel.permissions_for(member)
             lines.append(f"канал: **#{channel.name}**")
             lines.append(f"право говорить здесь: **{'да' if perms.speak else 'нет'}**")
+            lines.append("запреты канала: " + _speak_overwrites(channel))
+            category = getattr(channel, "category", None)
+            if category is not None:
+                lines.append(f"категория «{category.name}»: " + _speak_overwrites(category))
+            else:
+                lines.append("категория: нет")
         else:
             lines.append("в войсе: **нет**")
 
