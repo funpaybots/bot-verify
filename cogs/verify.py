@@ -415,6 +415,31 @@ def _make_embed(member: discord.Member, voice_name: str) -> discord.Embed:
     return embed
 
 
+async def _safe_respond(interaction: discord.Interaction, embed=None, content=None) -> bool:
+    """Ответ на нажатие даже если токен интеракции уже протух (10062)."""
+    if not interaction.response.is_done():
+        try:
+            await interaction.response.edit_message(embed=embed, content=content, view=None)
+            return True
+        except discord.NotFound:
+            pass
+        except discord.HTTPException:
+            pass
+    try:
+        await interaction.followup.send(embed=embed, content=content, ephemeral=True)
+        return True
+    except discord.HTTPException:
+        pass
+    message = getattr(interaction, "message", None)
+    if message is not None:
+        try:
+            await message.edit(embed=embed, content=content, view=None)
+            return True
+        except discord.HTTPException:
+            pass
+    return False
+
+
 class RejectModal(discord.ui.Modal, title="Причина недопуска"):
     reason = discord.ui.TextInput(
         label="Причина",
@@ -434,7 +459,8 @@ class RejectModal(discord.ui.Modal, title="Причина недопуска"):
 
 class VerifyView(discord.ui.View):
     def __init__(self, member: discord.Member, verifier: discord.Member):
-        super().__init__(timeout=300)
+        # 15 минут — столько живёт токен интеракции; раньше кнопки умирали через 5
+        super().__init__(timeout=900)
         self.member = member
         self.verifier = verifier
         self.done = False
@@ -446,6 +472,8 @@ class VerifyView(discord.ui.View):
         reason: str = "",
     ):
         if self.done:
+            # Кто-то уже нажал (или двойной клик) — отвечаем, чтобы у человека не висело «interaction failed»
+            await _safe_respond(interaction, content="Заявка уже обработана.")
             return
         self.done = True
         self.stop()
@@ -453,15 +481,8 @@ class VerifyView(discord.ui.View):
         guild = interaction.guild
         male_id, female_id, log_ch_id = _get_ids(guild.id)
 
-        # Определяем метод ответа: из модалки уже сделан defer → followup
-        # Из кнопки — ещё не отвечали → edit_message
-        responded = interaction.response.is_done()
-
         async def edit(embed):
-            if responded:
-                await interaction.followup.send(embed=embed, ephemeral=True)
-            else:
-                await interaction.response.edit_message(embed=embed, view=None)
+            await _safe_respond(interaction, embed=embed)
 
         if gender is None:
             # Недопуск
@@ -494,23 +515,15 @@ class VerifyView(discord.ui.View):
             symbol = "♂ Парень" if gender == "male" else "♀ Девушка"
 
             if not role:
-                if responded:
-                    await interaction.followup.send(f"Роль не найдена (id={role_id}).", ephemeral=True)
-                else:
-                    await interaction.response.edit_message(
-                        content=f"Роль не найдена (id={role_id}).", embed=None, view=None
-                    )
+                await _safe_respond(interaction, content=f"Роль не найдена (id={role_id}).")
                 return
 
             try:
                 await self.member.add_roles(role, reason=f"Верификация от {interaction.user}")
             except discord.Forbidden:
-                if responded:
-                    await interaction.followup.send("Нет прав выдавать роль.", ephemeral=True)
-                else:
-                    await interaction.response.edit_message(
-                        content="Нет прав выдавать роль — проверь позицию роли бота.", embed=None, view=None
-                    )
+                await _safe_respond(
+                    interaction, content="Нет прав выдавать роль — проверь позицию роли бота."
+                )
                 return
 
             # Снимаем роль новичка и мут в проходке

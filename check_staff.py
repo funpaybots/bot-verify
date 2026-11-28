@@ -173,6 +173,7 @@ check("persisted voice", sc.get_entry(777, 2)["voice_total"] >= 120)
 # Коги
 import cogs.staff as staff_cog
 import cogs.verify as verify_cog
+import discord
 
 names = {c.name for c in staff_cog.Staff.__cog_app_commands__}
 check(
@@ -312,6 +313,70 @@ check("clear global mute without voice", blank.kw.get("mute") is False, str(blan
 # Список мутов переживает рестарт: читается с диска
 storage.save("muted.json", {"pairs": [[777, 999]]})
 check("muted list loads from disk", (777, 999) in verify_cog._load_muted())
+
+# ── Ответ на нажатие, когда интеракция протухла (10062) ───────────────────────
+
+class _RespFake:
+    def __init__(self, done=False, notfound=False):
+        self._done = done
+        self.notfound = notfound
+        self.edited = None
+
+    def is_done(self):
+        return self._done
+
+    async def edit_message(self, **kw):
+        if self.notfound:
+            raise discord.NotFound.__new__(discord.NotFound)
+        self.edited = kw
+
+
+class _FollowupFake:
+    def __init__(self, fail=False):
+        self.fail = fail
+        self.sent = None
+
+    async def send(self, **kw):
+        if self.fail:
+            raise discord.HTTPException.__new__(discord.HTTPException)
+        self.sent = kw
+
+
+class _MsgFake:
+    def __init__(self):
+        self.edited = None
+
+    async def edit(self, **kw):
+        self.edited = kw
+
+
+class _InterFake:
+    def __init__(self, resp, followup, message=None):
+        self.response = resp
+        self.followup = followup
+        self.message = message
+
+
+resp = _RespFake()
+asyncio.run(verify_cog._safe_respond(_InterFake(resp, _FollowupFake()), content="ok"))
+check("respond edits message", resp.edited is not None and resp.edited.get("content") == "ok")
+
+resp = _RespFake(notfound=True)
+fu = _FollowupFake()
+asyncio.run(verify_cog._safe_respond(_InterFake(resp, fu), content="ok"))
+check("respond falls back to followup on 10062", fu.sent is not None, str(fu.sent))
+
+msg = _MsgFake()
+asyncio.run(
+    verify_cog._safe_respond(_InterFake(_RespFake(notfound=True), _FollowupFake(fail=True), msg), content="ok")
+)
+check("respond falls back to message edit", msg.edited is not None, str(msg.edited))
+
+check(
+    "respond never raises",
+    asyncio.run(verify_cog._safe_respond(_InterFake(_RespFake(notfound=True), _FollowupFake(fail=True)), content="x"))
+    is False,
+)
 
 # Поиск каналов для карты сервера
 class _FakeCh:
