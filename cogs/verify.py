@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """Верификация: /verify @user — хелпер видит ephemeral с кнопками Девушка/Парень/Недопуск."""
 
+import asyncio
 import datetime
 import difflib
 import logging
@@ -24,6 +25,7 @@ from cogs.staff_core import (
 
 SETTINGS_FILE = "settings.json"
 LOG_FILE = "verify_log.json"
+STAFF_MUTES_FILE = "staff_mutes.json"
 
 logger = logging.getLogger("verify")
 
@@ -193,6 +195,34 @@ def _speak_overwrites(channel) -> str:
     return "; ".join(parts[:10]) if parts else "нет"
 
 
+def _staff_mutes() -> dict:
+    data = load(STAFF_MUTES_FILE, {})
+    return data if isinstance(data, dict) else {}
+
+
+def _staff_mute_entry(guild_id: int, user_id: int):
+    """Активный мут от стаффа или None. Истёкшие считаем снятыми."""
+    entry = _staff_mutes().get(str(guild_id), {}).get(str(user_id))
+    if not isinstance(entry, dict):
+        return None
+    until = float(entry.get("until") or 0)
+    if until and until < datetime.datetime.now(datetime.timezone.utc).timestamp():
+        return None
+    return entry
+
+
+def _save_staff_mute(guild_id: int, user_id: int, entry=None) -> None:
+    data = _staff_mutes()
+    section = data.setdefault(str(guild_id), {})
+    if entry is None:
+        section.pop(str(user_id), None)
+        if not section:
+            data.pop(str(guild_id), None)
+    else:
+        section[str(user_id)] = entry
+    save(STAFF_MUTES_FILE, data)
+
+
 def _can_mute_members(guild) -> bool:
     """Есть ли у бота право «Заглушать участников» — без него мьют не снять."""
     perms = getattr(getattr(guild, "me", None), "guild_permissions", None)
@@ -211,6 +241,8 @@ async def _clear_server_mutes(guild, reason: str = "Чистка старых с
             continue
         member = getattr(state, "member", None)
         if member is None or member.bot:
+            continue
+        if _staff_mute_entry(guild.id, member.id) is not None:
             continue
         if await _clear_global_mute(member, reason):
             cleared += 1
@@ -911,11 +943,15 @@ class Verify(commands.Cog):
         # на человеке — всегда хвост старых сборок: снимаем, не спрашивая.
         if not getattr(after, "mute", False):
             return
+        if _staff_mute_entry(member.guild.id, member.id) is not None:
+            return
         await _clear_global_mute(member, "Снят серверный мьют: мут только по роли в проходке")
 
     @commands.Cog.listener()
     async def on_member_update(self, before: discord.Member, after: discord.Member):
         if after.bot or before.roles == after.roles:
+            return
+        if _staff_mute_entry(after.guild.id, after.id) is not None:
             return
         voice = getattr(after, "voice", None)
         if voice is not None and getattr(voice, "mute", False):
@@ -1026,6 +1062,78 @@ class Verify(commands.Cog):
             f"✅ Верификация снята с {member.mention}.", ephemeral=True
         )
 
+    @app_commands.command(name="mute", description="Заглушить участника (только стафф)")
+    @app_commands.describe(
+        member="Кого глушим",
+        minutes="На сколько минут (0 — пока не снимут вручную)",
+        reason="Причина",
+    )
+    async def mute(
+        self,
+        interaction: discord.Interaction,
+        member: discord.Member,
+        minutes: int = 0,
+        reason: str = "",
+    ):
+        if not _is_staff(interaction.user):
+            await interaction.response.send_message("Нет прав.", ephemeral=True)
+            return
+        if member.bot:
+            await interaction.response.send_message("Ботов не глушим.", ephemeral=True)
+            return
+        if not _can_mute_members(interaction.guild):
+            await interaction.response.send_message(
+                "У бота нет права «Заглушать участников» — без него мьют не поставить. "
+                "Настройки сервера → роли → роль бота.",
+                ephemeral=True,
+            )
+            return
+
+        try:
+            await member.edit(mute=True, reason=f"Мут от {interaction.user}: {reason}"[:400])
+        except (discord.Forbidden, discord.HTTPException):
+            await interaction.response.send_message(
+                "Не смог заглушить: проверь право «Заглушать участников» и что роль бота выше роли участника.",
+                ephemeral=True,
+            )
+            return
+
+        until = 0.0
+        if minutes and minutes > 0:
+            until = datetime.datetime.now(datetime.timezone.utc).timestamp() + minutes * 60
+        _save_staff_mute(
+            interaction.guild.id,
+            member.id,
+            {
+                "until": until,
+                "by": interaction.user.id,
+                "reason": reason[:200],
+                "at": datetime.datetime.now().strftime("%d.%m.%Y %H:%M"),
+            },
+        )
+
+        text = f"🔇 {member.mention} заглушен"
+        if minutes and minutes > 0:
+            text += f" на **{minutes} мин.**"
+        if reason:
+            text += f"\nПричина: {reason}"
+        await interaction.response.send_message(text, ephemeral=True)
+
+        if minutes and minutes > 0:
+            asyncio.create_task(self._auto_unmute(interaction.guild.id, member.id, minutes * 60))
+
+    async def _auto_unmute(self, guild_id: int, member_id: int, seconds: int):
+        await asyncio.sleep(seconds)
+        if _staff_mute_entry(guild_id, member_id) is not None:
+            return  # успели замутить заново — не мешаем
+        _save_staff_mute(guild_id, member_id, None)
+        guild = self.bot.get_guild(guild_id) if self.bot else None
+        if guild is None:
+            return
+        member = guild.get_member(member_id)
+        if member is not None:
+            await _clear_global_mute(member, "Мут истёк")
+
     @app_commands.command(name="unmute", description="Снять мут с гостя в проходке (только стафф)")
     @app_commands.describe(member="Кого размутить")
     async def unmute(self, interaction: discord.Interaction, member: discord.Member):
@@ -1036,6 +1144,7 @@ class Verify(commands.Cog):
             await interaction.response.send_message("Ботам мут не нужен.", ephemeral=True)
             return
 
+        _save_staff_mute(interaction.guild.id, member.id, None)
         removed = await _unmute_guest(member, f"Размутил {interaction.user}")
         if not removed:
             await interaction.response.send_message(

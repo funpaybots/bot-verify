@@ -30,6 +30,7 @@ class FakeRole:
 class FakePerms:
     def __init__(self, admin=False):
         self.administrator = admin
+        self.mute_members = admin
 
 
 class FakeMember:
@@ -209,7 +210,7 @@ sc.clear_dayoff(777, 4)
 check("no block without dayoff", verify_cog._dayoff_block(_FakeInteraction()) == "")
 
 verify_names = {c.name for c in verify_cog.Verify.__cog_app_commands__}
-check("verify commands intact", {"verify", "unverify", "verify_stats", "setup_verify", "post_map", "unmute", "unmute_all", "voice_diag"} <= verify_names)
+check("verify commands intact", {"verify", "unverify", "verify_stats", "setup_verify", "post_map", "unmute", "unmute_all", "voice_diag", "mute"} <= verify_names)
 
 
 # ── Роль новичка и мут в проходке ─────────────────────────────────────────────
@@ -475,6 +476,59 @@ check(
     bool(follow_cmd.sent) and "Снято" in (follow_cmd.sent[0][0] or ""),
     str(follow_cmd.sent),
 )
+
+# ── /mute: стафф глушит вручную, авто-чистка это уважает ──────────────────────
+
+class _MuteMember:
+    def __init__(self, uid, guild):
+        self.id = uid
+        self.guild = guild
+        self.roles = []
+        self.bot = False
+        self.guild_permissions = FakePerms(False)
+        self.kw = {}
+        self.voice = _UVVoice(mute=False)
+        self.mention = f"<@{uid}>"
+
+    async def edit(self, **kw):
+        self.kw = kw
+
+
+class _MuteGuild:
+    def __init__(self):
+        self.id = 555
+        self.roles = []
+        self.voice_channels = []
+        self.voice_states = {}
+        self.me = type("Me", (), {"guild_permissions": FakePerms(True)})()
+
+
+mute_guild = _MuteGuild()
+victim = _MuteMember(401, mute_guild)
+mute_guild.voice_states = {401: _UVState(victim, True)}
+
+resp_m, follow_m = _RespCmd(), _FollowCmd()
+inter_m = _InterCmd(mute_guild, staff_user, resp_m, follow_m)
+cog_m = verify_cog.Verify(bot=None)
+crashed = ""
+try:
+    asyncio.run(verify_cog.Verify.mute.callback(cog_m, inter_m, victim, 0, "спам"))
+except Exception as exc:
+    crashed = f"{type(exc).__name__}: {exc}"
+check("mute command runs", crashed == "", crashed)
+check("mute sets server mute", victim.kw.get("mute") is True, str(victim.kw))
+check("mute remembered", verify_cog._staff_mute_entry(555, 401) is not None)
+check("mute reply", bool(resp_m.msg) and "заглушен" in (resp_m.msg or ""), str(resp_m.msg))
+
+# Авто-чистка не снимает мут, поставленный стаффом
+asyncio.run(verify_cog._clear_server_mutes(mute_guild))
+check("cleanup respects staff mute", victim.kw.get("mute") is True, str(victim.kw))
+
+# Истёкший мут считается снятым
+verify_cog._save_staff_mute(555, 401, {"until": 1, "by": 1, "reason": "старый"})
+check("expired staff mute ignored", verify_cog._staff_mute_entry(555, 401) is None)
+asyncio.run(verify_cog._clear_server_mutes(mute_guild))
+check("cleanup clears expired mute", victim.kw.get("mute") is False, str(victim.kw))
 
 # Поиск каналов для карты сервера
 class _FakeCh:
